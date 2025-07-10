@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools >= 77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deepSI-jax"
+version = "0.1.1"
+authors = [
+    { name = "Bendeguz M. Gyorok", email = "gyorokbende@sztaki.hu" }
+]
+description = "Jax implementation of the deepSI package for nonlinear system identiffication."
+readme = "README.md"
+requires-python = ">=3.9,<3.13" # As of 2024-01-03, requiring jax <= 0.4.31 is not compatible with Python 3.13
+dependencies = [
+    "numpy",
+    "jax_sysid", # As of version 1.15.0, the iprint option in scipy.optimize (L-BFGS-B) is deprecated
+    "jax<=0.4.31", # As of 2024-01-03, jax > 0.4.31 has a much slower jax.lax.scan
+    "jaxopt",
+    "flax<=0.10.4",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+license = "MIT"
+license-files = ["LICEN[CS]E*"]
+keywords = [
+    "system identification",
+    "subspace encoder",
+    "SUBNET",
+]
+
+[project.urls]
+homepage = "https://github.com/gyorokbendeguz/deepSI-jax"
