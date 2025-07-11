@@ -4,7 +4,12 @@ import numpy as np
 import flax.linen as nn
 
 
-def set_default_net_struct_if_necessary(struct_dict):
+def set_default_net_struct_if_necessary(struct_dict: dict[str, int|str|bool]):
+    """Sets default values for the ANN structure, if those were not provided.
+
+    Args:
+        struct_dict (dict) : Dictionary containing the ANN structure description, e.g., number of hidden layers, etc.
+    """
     if 'hidden_layers' not in struct_dict:
         struct_dict['hidden_layers'] = 2
     if 'nodes_per_layer' not in struct_dict:
@@ -336,7 +341,41 @@ def gen_f_h_networks(nx: int, ny: int, nu: int, f_args: dict[str, int|str], h_ar
     return f_net, h_net, params
 
 
-def gen_fx_hx_fz_hz_encoder_networks(nx, nz, nu, ny, encoder_lag, fx_args, hx_args, fz_args, hz_args, encoder_args, seed):
+def gen_fx_hx_fz_hz_encoder_networks(nx: int, nz: int, nu: int, ny: int, encoder_lag: int, fx_args: dict[str, int|str],
+                                     hx_args: dict[str, int|str|bool], fz_args: dict[str, int|str], hz_args: dict[str, int|str|bool],
+                                     encoder_args: dict[str, int|str], seed: int):
+    """Creates and initializes the state transition network, and the output network for the process model and the noise
+    model as well, furthermore an encoder network.
+
+    Args:
+        nx (int) : Dimension of the process state vector.
+        nz (int) : Dimension of the noise model state vector.
+        ny (int) : Dimension of the output vector.
+        nu (int) : Dimension of the input vector.
+        encoder_lag (int) : Length of the state initialization window.
+        fx_args (dict) : Dictionary containing the hyperparameters of the ANN structure for the state transition function
+            of the process model. Dictionary entries are 'hidden_layers' specifying the number of hidden layers,
+            'nodes_per_layer' specifying the applied number of nodes (neurons) per layer, and 'activation' for the activation
+            function.
+        hx_args (dict) : Dictionary containing the hyperparameters of the ANN structure for the output map function of
+            the process model. Dictionary entries are the same as for ``fx_args``, with the addition of 'feedthrough' (bool) which
+            indicates weather the current output values depends on the current input value (True) or not (False).
+        fz_args (dict) : Dictionary containing the hyperparameters of the ANN structure for the state transition function
+            of the noise model. Dictionary entries are the same as for ``fx_args``.
+        hz_args (dict) : Dictionary containing the hyperparameters of the ANN structure for the output map function of
+            the noise model. Dictionary entries are the same as for ``hx_args``.
+        encoder_args (dict) : Dictionary containing the hyperparameters of the ANN structure for the encoder.
+            Dictionary entries are the same as for ``f_args``
+        seed (int, optional) : Seed for initialization.
+
+    Returns:
+        fx_net (function) : State transition ANN function of the process model.
+        hx_net (function) : Output map ANN function of the process model.
+        fz_net (function) : State transition ANN function of the noise model.
+        hz_net (function) : Output map ANN function of the noise model.
+        encoder_net (function) : Encoder ANN function.
+        params (list of ndararys) : List containing the combined initial values for all ANNs in the model.
+    """
     @jax.jit
     def fx_net(x, u, params):
         # fx : (nx, nu) --> nx
@@ -464,7 +503,36 @@ def gen_fx_hx_fz_hz_encoder_networks(nx, nz, nu, ny, encoder_lag, fx_args, hx_ar
     return fx_net, hx_net, fz_net, hz_net, encoder_net, params
 
 
-def gen_fx_hx_fz_hz_networks(nx, nz, nu, ny, fx_args, hx_args, fz_args, hz_args, seed):
+def gen_fx_hx_fz_hz_networks(nx: int, nz: int, nu: int, ny: int, fx_args: dict[str, int|str], hx_args: dict[str, int|str|bool],
+                             fz_args: dict[str, int|str], hz_args: dict[str, int|str|bool], seed: int):
+    """Creates and initializes the state transition network, and the output network for the process model and the noise
+    model as well, but without an encoder network.
+
+    Args:
+        nx (int) : Dimension of the process state vector.
+        nz (int) : Dimension of the noise model state vector.
+        ny (int) : Dimension of the output vector.
+        nu (int) : Dimension of the input vector.
+        fx_args (dict) : Dictionary containing the hyperparameters of the ANN structure for the state transition function
+            of the process model. Dictionary entries are 'hidden_layers' specifying the number of hidden layers,
+            'nodes_per_layer' specifying the applied number of nodes (neurons) per layer, and 'activation' for the activation
+            function.
+        hx_args (dict) : Dictionary containing the hyperparameters of the ANN structure for the output map function of
+            the process model. Dictionary entries are the same as for ``fx_args``, with the addition of 'feedthrough' (bool) which
+            indicates weather the current output values depends on the current input value (True) or not (False).
+        fz_args (dict) : Dictionary containing the hyperparameters of the ANN structure for the state transition function
+            of the noise model. Dictionary entries are the same as for ``fx_args``.
+        hz_args (dict) : Dictionary containing the hyperparameters of the ANN structure for the output map function of
+            the noise model. Dictionary entries are the same as for ``hx_args``.
+        seed (int, optional) : Seed for initialization.
+
+    Returns:
+        fx_net (function) : State transition ANN function of the process model.
+        hx_net (function) : Output map ANN function of the process model.
+        fz_net (function) : State transition ANN function of the noise model.
+        hz_net (function) : Output map ANN function of the noise model.
+        params (list of ndararys) : List containing the combined initial values for all ANNs in the model.
+    """
     @jax.jit
     def fx_net(x, u, params):
         # fx : (nx, nu) --> nx
@@ -576,7 +644,36 @@ def gen_fx_hx_fz_hz_networks(nx, nz, nu, ny, fx_args, hx_args, fz_args, hz_args,
 
     return fx_net, hx_net, fz_net, hz_net, params
 
-def gen_separate_fx_hx_fz_hz_networks(nx, nz, nu, ny, fx_args, hx_args, fz_args, hz_args, seed):
+def gen_separate_fx_hx_fz_hz_networks(nx: int, nz: int, nu: int, ny: int, fx_args: dict[str, int|str], hx_args: dict[str, int|str|bool],
+                                      fz_args: dict[str, int|str], hz_args: dict[str, int|str|bool], seed: int):
+    """Creates the state transition network, and the output network for the process model and separately creates and
+    initializes the noise model. Useful for freezing the process model.
+
+    Args:
+        nx (int) : Dimension of the process state vector.
+        nz (int) : Dimension of the noise model state vector.
+        ny (int) : Dimension of the output vector.
+        nu (int) : Dimension of the input vector.
+        fx_args (dict) : Dictionary containing the hyperparameters of the ANN structure for the state transition function
+            of the process model. Dictionary entries are 'hidden_layers' specifying the number of hidden layers,
+            'nodes_per_layer' specifying the applied number of nodes (neurons) per layer, and 'activation' for the activation
+            function.
+        hx_args (dict) : Dictionary containing the hyperparameters of the ANN structure for the output map function of
+            the process model. Dictionary entries are the same as for ``fx_args``, with the addition of 'feedthrough' (bool) which
+            indicates weather the current output values depends on the current input value (True) or not (False).
+        fz_args (dict) : Dictionary containing the hyperparameters of the ANN structure for the state transition function
+            of the noise model. Dictionary entries are the same as for ``fx_args``.
+        hz_args (dict) : Dictionary containing the hyperparameters of the ANN structure for the output map function of
+            the noise model. Dictionary entries are the same as for ``hx_args``.
+        seed (int, optional) : Seed for initialization.
+
+    Returns:
+        fx_net (function) : State transition ANN function of the process model.
+        hx_net (function) : Output map ANN function of the process model.
+        fz_net (function) : State transition ANN function of the noise model.
+        hz_net (function) : Output map ANN function of the noise model.
+        noise_params (list of ndararys) : List containing the combined initial values for the ANNs in the noise model.
+    """
     @jax.jit
     def fx_net(x, u, params):
         # fx : (nx, nu) --> nx
@@ -677,7 +774,41 @@ def gen_separate_fx_hx_fz_hz_networks(nx, nz, nu, ny, fx_args, hx_args, fz_args,
     return fx_net, hx_net, fz_net, hz_net, noise_params
 
 
-def gen_separate_fx_hx_fz_hz_encoder_networks(nx, nz, nu, ny, encoder_lag, fx_args, hx_args, fz_args, hz_args, encoder_args, seed):
+def gen_separate_fx_hx_fz_hz_encoder_networks(nx: int, nz: int, nu: int, ny: int, encoder_lag: int, fx_args: dict[str, int|str],
+                                              hx_args: dict[str, int|str|bool], fz_args: dict[str, int|str], hz_args: dict[str, int|str|bool],
+                                              encoder_args: dict[str, int|str], seed: int):
+    """Creates the state transition network, and the output network for the process model and separately creates and
+    initializes the noise model. Useful for freezing the process model.
+
+    Args:
+        nx (int) : Dimension of the process state vector.
+        nz (int) : Dimension of the noise model state vector.
+        ny (int) : Dimension of the output vector.
+        nu (int) : Dimension of the input vector.
+        encoder_lag (int) : Number of past IO data samples used for state reconstruction/estimation.
+        fx_args (dict) : Dictionary containing the hyperparameters of the ANN structure for the state transition function
+            of the process model. Dictionary entries are 'hidden_layers' specifying the number of hidden layers,
+            'nodes_per_layer' specifying the applied number of nodes (neurons) per layer, and 'activation' for the activation
+            function.
+        hx_args (dict) : Dictionary containing the hyperparameters of the ANN structure for the output map function of
+            the process model. Dictionary entries are the same as for ``fx_args``, with the addition of 'feedthrough' (bool) which
+            indicates weather the current output values depends on the current input value (True) or not (False).
+        fz_args (dict) : Dictionary containing the hyperparameters of the ANN structure for the state transition function
+            of the noise model. Dictionary entries are the same as for ``fx_args``.
+        hz_args (dict) : Dictionary containing the hyperparameters of the ANN structure for the output map function of
+            the noise model. Dictionary entries are the same as for ``hx_args``.
+        encoder_args (dict) : Dictionary containing the hyperparameters of the ANN structure for the encoder function.
+            Dictionary entries are the same as for ``fx_args``.
+        seed (int, optional) : Seed for initialization.
+
+    Returns:
+        fx_net (function) : State transition ANN function of the process model.
+        hx_net (function) : Output map ANN function of the process model.
+        fz_net (function) : State transition ANN function of the noise model.
+        hz_net (function) : Output map ANN function of the noise model.
+        encoder_net (function) : Encoder ANN function for combined process+noise state estimation.
+        params (list of ndararys) : List containing the combined initial values for the ANNs in the noise model and the encoder.
+    """
     @jax.jit
     def fx_net(x, u, params):
         # fx : (nx, nu) --> nx

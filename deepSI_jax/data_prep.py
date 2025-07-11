@@ -274,7 +274,19 @@ def back_scale_data(X: np.ndarray | list, mean: np.ndarray, std: np.ndarray):
     return X_back
 
 
-def get_nu_ny_and_auto_norm(Y_train, U_train):
+def get_nu_ny_and_auto_norm(Y_train: np.ndarray | list, U_train: np.ndarray | list):
+    """Computes the input and output dimensions based on the training data. While also returns a dictionary containing
+    the standard deviations and mean values for normalization.
+
+    Args:
+        Y_train (ndarray or list of ndarrays) : Output values of the training data.
+        U_train (ndarray or list of ndarrays) : Input values of the training data.
+
+    Returns:
+        nu (int) : Input dimension of the data-generating system.
+        ny (int) : Output dimension of the data-generating system.
+        norm (dict) : Dictionary containing the standard deviation and mean values of the IO data.
+    """
 
     if isinstance(Y_train, list):
         Y_train_0 = vec_reshape(Y_train[0])

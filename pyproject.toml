@@ -10,7 +10,7 @@ authors = [
 ]
 description = "Jax implementation of the deepSI package for nonlinear system identiffication."
 readme = "README.md"
-requires-python = ">=3.9,<3.13" # As of 2024-01-03, requiring jax <= 0.4.31 is not compatible with Python 3.13
+requires-python = ">=3.10,<3.13" # As of 2024-01-03, requiring jax <= 0.4.31 is not compatible with Python 3.13
 dependencies = [
     "numpy",
     "jax_sysid", # As of version 1.15.0, the iprint option in scipy.optimize (L-BFGS-B) is deprecated

@@ -1,7 +1,4 @@
-import numpy as np
 import time
-import jax
-import jax.numpy as jnp
 import jaxopt
 from functools import partial
 from jax_sysid.models import Model, default_small_tau_th, epsil_lasso, l1reg, l2reg, linreg, adam_solver, get_bounds
@@ -14,10 +11,32 @@ import sys
 
 
 class SUBNET(Model):
-    # TODO: docstring
-    def __init__(self, nx, ny, nu, norm=None, f_args={}, h_args={}, use_encoder=True, encoder_lag=10, encoder_args={},
-                 seed=0):
-        # TODO: docstring
+    """SUBNET model implementation for identifying discrete-time ANN-SS models based on the jax_sysid.Model class.
+    For more details about the methods: https://proceedings.mlr.press/v144/beintema21a/beintema21a.pdf
+    And about jax-sysid: https://ieeexplore.ieee.org/abstract/document/10882922"""
+    def __init__(self, nx: int, ny: int, nu: int, norm=None, f_args={}, h_args={}, use_encoder=True, encoder_lag=10,
+                 encoder_args={}, seed=0):
+        """ Initializes the model structure.
+
+        Args:
+            nx (int) : Model state dimension.
+            ny (int) : Output dimension.
+            nu (int) : Input dimension.
+            norm (dict) : Dictionary containing the mean and standard deviation values for normalization. If None,
+                no normalization is applied (i.e., zero-mean and standard deviation of 1 is assumed). (default: None)
+            f_args (dict) : Dictionary containing the hyperparameters of the ANN structure for the state transition function.
+                Dictionary entries are 'hidden_layers' specifying the number of hidden layers, 'nodes_per_layer' specifying
+                the applied number of nodes (neurons) per layer, and 'activation' for the activation function.
+            h_args (dict) : Dictionary containing the hyperparameters of the ANN structure for the output map function.
+                    Dictionary entries are the same as for ``f_args``, with the addition of 'feedthrough' (bool) which
+                    indicates weather the current output values depends on the current input value (True) or not (False).
+            use_encoder (bool) : Whether to use encoder or not. (default: True)
+            encoder_lag (int) : Encoder lag for state reconstruction, i.e., the number of past IO data used for
+                estimating x0. (default: True)
+            encoder_args (dict) : Dictionary containing the hyperparameters of the ANN structure for the encoder.
+                Dictionary entries are the same as for ``f_args``.
+            seed (int) : Random seed for initialization. (default: 0)
+        """
 
         if norm is None:
             self.norm = dict()
@@ -49,7 +68,30 @@ class SUBNET(Model):
 
     def set_loss_fun(self, T=None, T_overlap=0, output_loss=None, l2_reg=0.0, l1_reg=0.0, group_lasso_reg=0.0, group_lasso_fcn=None,
                      l2_reg_x0=0., zero_coeff=0., custom_regularization=None, xsat=None):
-        # TODO: docstring
+        """Method for setting the loss function parameters.
+
+        Args:
+            T (int) : Truncation length. If None, the simulation loss function is used, if T>0, the truncated prediction
+                function is applied. (default: None)
+            T_overlap (int) : The length of the overlap between each subsection in the truncated prediction loss calculation.
+                Only considered if T is not None, otherwise ignored. (default: 0)
+            output_loss (function) : Loss function penalizing output fit errors, loss=output_loss(Yhat,Y), where Yhat is
+                the sequence of predicted outputs and Y is the measured output. If None, use standard mean squared error
+                loss=sum((Yhat-Y)**2)/Y.shape[0]. (default: None)
+            l2_reg (float) : Coefficient of the L2 regularization on model parameters. (default: 0.0)
+            l1_reg (float) : Coefficient of the L1 regularization on model parameters. (default: 0.0)
+            group_lasso_reg (float) : Coefficient of the group lasso regularization for automatic model order selection.
+                (default: 0.0)
+            group_lasso_fcn (function) : #TODO: update this when implemented the default version
+            l2_reg_x0 (float) : Coefficient of the L2 regularization on the initial states. (default: 0.0)
+            zero_coeff (float) : Entries smaller than zero_coeff are set to zero. Useful when L1 or group lasso
+                regularization is applied. (default: 0.0)
+            custom_regularization (function) : Additional custom regularization term, a function of the model parameters
+                and initial state, as custom_regularization(params, x0). If None, no additional regularization is applied.
+                (default: None)
+            xsat (float) : Saturation value for state variables, forced during training to avoid numerical issues.
+                If None, no saturation value is applied. (default: None)
+        """
         self.T = T
         self.T_overlap = T_overlap
         if self.T is not None and self.T > 0:
@@ -69,8 +111,20 @@ class SUBNET(Model):
                   group_lasso_fcn=group_lasso_fcn, zero_coeff=zero_coeff, custom_regularization=custom_regularization,
                   xsat=xsat)
 
-    def simulate(self, x0, U):
-        # TODO: add docstring
+    def simulate(self, x0: np.ndarray | jnp.ndarray | list, U: np.ndarray | list):
+        """Simulates the model on a test data. Automatic normalization and back-scaling is applied.
+
+        Args:
+            x0 (ndarray or list of ndarrays) : Initial state to start the simulation, must be (model.nx,) shaped.
+                If the model is evaluated on multiple data sequences at the same time, this must be a list, containing
+                the estimated initial states.
+            U (ndarray ir list of ndarrays) : Input for simulation as an N-by-nu numpy array. If the model is evaluated
+                on multiple data sequences at the same time, this must be a list of Ni-by-nu numpy arrays.
+
+        Returns:
+            Y_back_scaled (ndarray or list of ndarrays) : Back-scaled simulated output for each data sequence.
+            X (ndarray or list of ndarrays) : Simulated states for each data sequence.
+        """
         U_norm, _, _ = normalize_data(U, self.norm['u_mean'], self.norm['u_std'])
 
         @jax.jit
@@ -100,15 +154,16 @@ class SUBNET(Model):
 
 
     def encoder_estim_x0(self, Y: np.ndarray | list, U: np.ndarray | list):
-        #TODO: update docstring
         """Estimates the initial state value with the trained encoder function from past IO data.
 
         Args:
-            Y (ndarray) : Output values of the test data with size N-by-ny or list or Ni-by-ny sized ndarrays.
-            U (ndarray) : Input values of the test data with size N-by-nu.
+            Y (ndarray or list of ndarrays) : Output values of the test data with size N-by-ny or list or Ni-by-ny sized
+                numpy arrays.
+            U (ndarray) : Input values of the test data with size N-by-nu or list or Ni-by-nu sized numpy arrays.
 
         Returns:
-            x0 (ndarray) : The estimated initial state value or batched if multiple experiments are provided.
+            x0 (ndarray or liost of ndarrays) : The estimated initial state value or batched (list of jax.numpy arrays)
+                if multiple experiments are provided.
         """
         Y_norm, _, _ = normalize_data(Y, self.norm['y_mean'], self.norm['y_std'])
         U_norm, _, _ = normalize_data(U, self.norm['u_mean'], self.norm['u_std'])
@@ -124,7 +179,8 @@ class SUBNET(Model):
         return x0
 
     def _check_state_reconstruction_length(self, Y, U):
-        #TODO: add docstring
+        """Helper function for encoder_estim_x0. Checks if the provided IO data has the right size for encoder-based
+        state estimation."""
         Y = vec_reshape(Y)
         U = vec_reshape(U)
         if Y.shape[0] != U.shape[0]:
@@ -138,6 +194,8 @@ class SUBNET(Model):
         return create_hist_for_test(Y[-self.encoder_lag:, :], U[-self.encoder_lag:, :])
 
     def generate_SS_forward_function(self):
+        """Generates the SS_forward function that performs a step of the model. For custom SUBNET models, this needs to
+        be changed."""
         @jax.jit
         def SS_forward(x, u, th, sat):
             """
@@ -151,8 +209,8 @@ class SUBNET(Model):
             return x, y
         return SS_forward
 
-    def prepare_data_for_training(self, Y_train, U_train):
-        # TODO: add docstring
+    def prepare_data_for_training(self, Y_train: np.ndarray | list, U_train: np.ndarray | list):
+        """Helper function for the fit method. Performs data normalization and creates multi shooting data if necessary."""
         Y, _, _ = normalize_data(Y_train, self.norm['y_mean'], self.norm['y_std'])
         U, _, _ = normalize_data(U_train, self.norm['u_mean'], self.norm['u_std'])
 
@@ -180,18 +238,14 @@ class SUBNET(Model):
             Y = [vec_reshape(Y)]
         return Y, U, YU_hist, Nexp
 
-    def fit(self, Y_train, U_train):
-        # TODO: update docstring
-        """Train a dynamical model using input-output data.
+    def fit(self, Y_train: np.ndarray | list, U_train: np.ndarray | list):
+        """Trains a dynamical model using input-output data.
 
-        Parameters
-        ----------
-        Y : ndarray or list of ndarrays
-            Training dataset: output data. Y must be a N-by-ny numpy array
-            or a list of Ni-by-ny numpy arrays, where Ni is the length of the i-th experiment.
-        U : ndarray
-            Training dataset: input data. U must be a N-by-nu numpy array
-            or a list of Ni-by-nu numpy arrays, where Ni is the length of the i-th experiment.
+        Args:
+            Y_train (ndarray or list of ndararys) : Outputs of the training data set. Must be N-by-ny numpy array or
+                a list or Ni-by-ny numpy arrays, where Ni is the length of the i-th experiment.
+            U_train (ndarray or list of ndarrays) : Inputs of the training data set. Must be N-by-nu numpy array or
+                a list or Ni-by-nu numpy arrays, where Ni is the length of the i-th experiment.
         """
         nx = self.nx
         if nx < 1:
@@ -207,8 +261,6 @@ class SUBNET(Model):
         lbfgs_epochs = self.lbfgs_epochs
 
         Y, U, YU_hist, Nexp = self.prepare_data_for_training(Y_train, U_train)
-        nu = U[0].shape[1]
-        ny = Y[0].shape[1]
 
         if self.params is None:
             raise (Exception(
@@ -264,26 +316,7 @@ class SUBNET(Model):
 
         def train_model(solver, solver_iters, z, x0, J0):
             """
-            Train a state-space model using the specified solver.
-
-            Parameters
-            ----------
-            solver : str
-                The solver to use for optimization.
-            solver_iters : int
-                The maximum number of iterations for the solver.
-            z : list
-                The initial guess for the model parameters.
-            x0 : ndarray or list of ndarrays
-                The initial guess for the initial state vector, or a list of initial state vectors for multiple experiments.
-            J0 : float
-                The initial cost value.
-
-            Returns
-            -------
-            tuple
-                A tuple containing the updated model parameters, initial state vector, final cost value, and number of iterations.
-            """
+            Internal function for training the model."""
             if solver_iters == 0:
                 return z, x0, J0, 0.
 
@@ -310,21 +343,7 @@ class SUBNET(Model):
 
             @jax.jit
             def simulation_loss(th, x0):
-                """
-                Calculate the loss function for system identification.
-
-                Parameters
-                ----------
-                th : array
-                    The system parameters.
-                x0 : array
-                    The initial state or list of initial states.
-
-                Returns
-                -------
-                float
-                    The loss value.
-                """
+                """Internal function implementing the simulation-based loss function calculations."""
                 f = partial(SS_forward, th=th, sat=self.xsat)
                 cost = 0.
                 for i in range(Nexp):
@@ -334,21 +353,7 @@ class SUBNET(Model):
 
             @jax.jit
             def multi_shooting_loss(th, x0):
-                """
-                Calculate the loss function for system identification.
-
-                Parameters
-                ----------
-                th : array
-                    The system parameters.
-                x0 : array
-                    The initial state or list of initial states.
-
-                Returns
-                -------
-                float
-                    The loss value.
-                """
+                """Internal function implementing the truncated prediction-based loss function calculations."""
                 f = partial(SS_forward, th=th, sat=self.xsat)
 
                 def run_single_exp(x0i, Ui, Yi):
@@ -363,21 +368,8 @@ class SUBNET(Model):
 
             @jax.jit
             def multi_shooting_loss_encoder(th, x0):
-                """
-                Calculate the loss function for system identification.
-
-                Parameters
-                ----------
-                th : array
-                    The system parameters.
-                x0 : array
-                    The initial state or list of initial states.
-
-                Returns
-                -------
-                float
-                    The loss value.
-                """
+                """Internal function implementing the truncated prediction-based loss function calculations with
+                encoder-based state estimation."""
                 def single_state_estim(YU_histi):
                     return self.encoder_fcn(YU_histi, th)
 
@@ -397,6 +389,7 @@ class SUBNET(Model):
 
             @jax.jit
             def loss(th, x0):
+                """Internal function: making a selection for the applied loss function type."""
                 if self.isMultiShooting and self.isEncoderUsed:
                     return multi_shooting_loss_encoder(th, x0)
                 elif self.isMultiShooting and not self.isEncoderUsed:
@@ -637,9 +630,26 @@ class SUBNET(Model):
         self.sparsity = sparsity
         return
 
-    def learn_x0(self, U, Y, rho_x0=None, RTS_epochs=1, verbosity=True, LBFGS_refinement=False,
-                 LBFGS_rho_x0=1.e-8, lbfgs_epochs=1000, Q=None, R=None):
-        # TODO: add docstrings
+    def learn_x0(self, U: np.ndarray | list, Y: np.ndarray | list, rho_x0=None, RTS_epochs=1, verbosity=True,
+                 LBFGS_refinement=True, LBFGS_rho_x0=0., lbfgs_epochs=1000, Q=None, R=None):
+        """Estimate x0 by L-BFGS optimization, and providing an initial guess by Rauch–Tung–Striebel smoothing.
+
+        Args:
+            U (ndarray or list of ndararys) : Input data. Must be N-by-nu numpy array or a list of Ni-by-nu numpy arrays.
+            Y (ndarray or list of ndarrays) : Output data. Must be N-by-ny numpy array or a list of Ni-by-ny numpy arrays.
+            rho_x0 (float) : L2 regularization for the initial state. Only used by the EKF-based guessing. If None, or
+                zero, 1e-4 is used. (default: None)
+            RTS_epochs (int) : Number of forward EKF and backward RTS passes. (default: 1)
+            verbosity (bool) : If false, removes printout of operations. (default: True)
+            LBFGS_refinement (bool) : If True, refine the RTS solution via L-BFGS optimization. (default: True)
+            LBFGS_rho_x0 (float) : L2-regularization used by L-BFGS. (default: 0.)
+            lbfgs_epochs (int) : Max number of L-BFGS iterations. (default: 1000)
+            Q (ndarray) : Process noise covariance matrix. If None, 1.e-5*I is applied. (default: None)
+            R (ndarray) : Measurement noise covariance matrix. If None, the identity matrix I is applied. (default: None)
+
+        Returns:
+            x0 (ndarary or list of ndararys) : Estimated initial states.
+        """
         if self.rho_x0 == 0. and (rho_x0 is None or rho_x0 <= 0.):
             rho_x0 = 1e-4  # learn_x0 method uses rho_x0 to initialize covariance matrix, so it should be larger than zero
         U_norm, _, _ = normalize_data(U, self.norm['u_mean'], self.norm['u_std'])
@@ -658,8 +668,31 @@ class SUBNET(Model):
 
 
 class SUBNET_innovation(SUBNET):
-    def __init__(self, nx, ny, nu, norm=None, f_args={}, h_args={}, use_encoder=True, encoder_lag=10, encoder_args={},
-                 seed=0):
+    """SUBNET model implementation with innovation noise filter for identifying discrete-time ANN-SS models with
+    process noise structure. For more information: https://www.sciencedirect.com/science/article/pii/S0005109823003710"""
+    def __init__(self, nx: int, ny: int, nu: int, norm=None, f_args={}, h_args={}, use_encoder=True, encoder_lag=10,
+                 encoder_args={}, seed=0):
+        """ Initializes the model structure.
+
+        Args:
+            nx (int) : Model state dimension.
+            ny (int) : Output dimension.
+            nu (int) : Input dimension.
+            norm (dict) : Dictionary containing the mean and standard deviation values for normalization. If None,
+                no normalization is applied (i.e., zero-mean and standard deviation of 1 is assumed). (default: None)
+            f_args (dict) : Dictionary containing the hyperparameters of the ANN structure for the state transition function.
+                Dictionary entries are 'hidden_layers' specifying the number of hidden layers, 'nodes_per_layer' specifying
+                the applied number of nodes (neurons) per layer, and 'activation' for the activation function.
+            h_args (dict) : Dictionary containing the hyperparameters of the ANN structure for the output map function.
+                    Dictionary entries are the same as for ``f_args``, with the addition of 'feedthrough' (bool) which
+                    indicates weather the current output values depends on the current input value (True) or not (False).
+            use_encoder (bool) : Whether to use encoder or not. (default: True)
+            encoder_lag (int) : Encoder lag for state reconstruction, i.e., the number of past IO data used for
+                estimating x0. (default: True)
+            encoder_args (dict) : Dictionary containing the hyperparameters of the ANN structure for the encoder.
+                Dictionary entries are the same as for ``f_args``.
+            seed (int) : Random seed for initialization. (default: 0)
+        """
         super().__init__(nx=nx, ny=ny, nu=nu, norm=norm, f_args=f_args, h_args=h_args, use_encoder=use_encoder,
                          encoder_lag=encoder_lag, encoder_args=encoder_args, seed=seed)
 
@@ -681,8 +714,21 @@ class SUBNET_innovation(SUBNET):
         self.state_fcn = f_net
         self.init(params=init_params)
 
-    def simulate(self, x0, U):
-        # TODO: add docstring
+    def simulate(self, x0: np.ndarray | jnp.ndarray | list, U: np.ndarray | list):
+        """Simulates the model on a test data. Automatic normalization and back-scaling is applied. To enable the forward
+        pass of the innovation noise filter, theprediction error is assumed to be zero.
+
+        Args:
+            x0 (ndarray or list of ndarrays) : Initial state to start the simulates, must be (model.nx,) shaped.
+                If the model is evaluated on multiple data sequences at the same time, this must be a list, containing
+                the estimated initial states.
+            U (ndarray ir list of ndarrays) : Input for simulation as an N-by-nu numpy array. If the model is evaluated
+                on multiple data sequences at the same time, this must be a list of Ni-by-nu numpy arrays.
+
+        Returns:
+            Y_back_scaled (ndarray or list of ndarrays) : Back-scaled simulated output for each data sequence.
+            X (ndarray or list of ndarrays) : Simulated states for each data sequence.
+        """
         U_norm, _, _ = normalize_data(U, self.norm['u_mean'], self.norm['u_std'])
 
         @jax.jit
@@ -711,8 +757,24 @@ class SUBNET_innovation(SUBNET):
         Y_back_scaled = back_scale_data(Y, self.norm['y_mean'], self.norm['y_std'])
         return Y_back_scaled, X
 
-    def predict_one_step_ahead(self, x0, U, Y):
-        # TODO: add docstring
+    def predict_one_step_ahead(self, x0: np.ndarray | jnp.ndarray | list, U: np.ndarray | list, Y: np.ndarray | list):
+        """Predicts the model output on a test data in a one-ste-ahead manner. Automatic normalization and back-scaling
+        is applied. The current output values are only utilized for predicting the next state values with the innovation
+        noise structure.
+
+        Args:
+            x0 (ndarray or list of ndarrays) : Initial state to start the predictions, must be (model.nx,) shaped.
+                If the model is evaluated on multiple data sequences at the same time, this must be a list, containing
+                the estimated initial states.
+            U (ndarray ir list of ndarrays) : Input for predictions as an N-by-nu numpy array. If the model is evaluated
+                on multiple data sequences at the same time, this must be a list of Ni-by-nu numpy arrays.
+            Y (ndarray or list of ndarrays) : Measured output values as an N-by-ny numpy array. If the model is evaluated
+                on multiple data sequences at the same time, this must be a list of Ni-by-ny numpy arrays.
+
+        Returns:
+            Y_back_scaled (ndarray or list of ndarrays) : Back-scaled simulated output for each data sequence.
+            X (ndarray or list of ndarrays) : Simulated states for each data sequence.
+        """
         U_norm, _, _ = normalize_data(U, self.norm['u_mean'], self.norm['u_std'])
         Y_norm, _, _ = normalize_data(Y, self.norm['y_mean'], self.norm['y_std'])
 
@@ -749,6 +811,8 @@ class SUBNET_innovation(SUBNET):
         return Y_back_scaled, X
 
     def generate_SS_forward_function(self):
+        """Generates the SS_forward function that performs a step of the model. The current output error value is used
+        for the state transition."""
         @jax.jit
         def SS_forward(x, uy, th, sat):
             """
@@ -766,8 +830,10 @@ class SUBNET_innovation(SUBNET):
             return x, yhat
         return SS_forward
 
-    def prepare_data_for_training(self, Y_train, U_train):
-        # TODO: add docstring
+    def prepare_data_for_training(self, Y_train: np.ndarray | list, U_train: np.ndarray | list):
+        """Helper function for the fit method. Performs data normalization and creates multi shooting data if necessary.
+        The returned U array contains the input and output values as well, since now the output values are utilized for
+        model evaluations."""
         Y, _, _ = normalize_data(Y_train, self.norm['y_mean'], self.norm['y_std'])
         U, _, _ = normalize_data(U_train, self.norm['u_mean'], self.norm['u_std'])
 
@@ -799,41 +865,12 @@ class SUBNET_innovation(SUBNET):
             Y = [Yi]
         return Y, U, YU_hist, Nexp
 
-    def learn_x0_single(self, U, Y, rho_x0=None, RTS_epochs=1, verbosity=True, LBFGS_refinement=False,
-                    LBFGS_rho_x0=1.e-8, lbfgs_epochs=1000, Q=None, R=None):
-        # TODO: update docstring
-        """Estimate x0 by Rauch–Tung–Striebel smoothing (Sarkka and Svenson, 2023, p.268),
-        possibly followed by L-BFGS optimization.
-
-        (C) 2023 A. Bemporad
-
-        Parameters
-        ----------
-        U : ndarray
-            Input data, U must be a N-by-nu numpy array
-        Y : ndarray
-            Output data, Y must be a N-by-ny numpy array
-        rho_x0 : float
-            L2-regularization on initial state x0, 0.5*rho_x0*||x0||_2^2 (default: model.rho_x0)
-        RTS_epochs : int
-            Number of forward KF and backward RTS passes
-        verbosity : bool
-            If false, removes printout of operations
-        LBFGS_refinement : bool
-            If True, refine solution via L-BFGS optimization. Also used in the case bounds on x0 have been specified and the value of x0 estimated by RTS is not feasible.
-        LBFGS_rho_x0 : float
-            L2-regularization used by L-BFGS, by default 1.e-8
-        lbfgs_epochs : int
-            Max number of L-BFGS iterations
-        Q : ndarray
-            Process noise covariance matrix, by default 1.e-5*I. Matrix Q could be set smaller (e.g., 1.e-8*I),although in the case of very good models the covariance matrix of the state estimation error may become very small and RTS smoothing numerically unstable, and higher values of Q should be used.
-        R : ndarray
-            Measurement noise covariance matrix, by default the identity matrix I
-
-        Returns
-        -------
-        array
-            Optimal initial state x0.
+    def learn_x0_single(self, U: np.ndarray, Y: np.ndarray, rho_x0=None, RTS_epochs=1, verbosity=True,
+                        LBFGS_refinement=False, LBFGS_rho_x0=0., lbfgs_epochs=1000, Q=None, R=None):
+        """Helper function for learn_xo. Estimates x0 for a single measurement record by L-BFGS optimization, and
+        provides an initial guess by Rauch–Tung–Striebel smoothing. The EKF and RTS part only considers the deterministic
+        part of the model, while the L-BFGS-based optimization takes the full model into account with the innovation noise
+        structure.
         """
         nx = self.nx
         ny = self.ny
@@ -991,9 +1028,26 @@ class SUBNET_innovation(SUBNET):
                     f"\nFinal loss MSE (after LBFGS refinement) = {mse_loss: 8.6f}")
         return x
 
-    def learn_x0(self, U, Y, rho_x0=None, RTS_epochs=1, verbosity=True, LBFGS_refinement=False,
-                 LBFGS_rho_x0=1.e-8, lbfgs_epochs=1000, Q=None, R=None):
-        # TODO: add docstrings
+    def learn_x0(self, U: np.ndarray | list, Y: np.ndarray | list, rho_x0=None, RTS_epochs=1, verbosity=True,
+                 LBFGS_refinement=True, LBFGS_rho_x0=0., lbfgs_epochs=1000, Q=None, R=None):
+        """Estimate x0 by L-BFGS optimization, and providing an initial guess by Rauch–Tung–Striebel smoothing.
+
+        Args:
+            U (ndarray or list of ndararys) : Input data. Must be N-by-nu numpy array or a list of Ni-by-nu numpy arrays.
+            Y (ndarray or list of ndarrays) : Output data. Must be N-by-ny numpy array or a list of Ni-by-ny numpy arrays.
+            rho_x0 (float) : L2 regularization for the initial state. Only used by the EKF-based guessing. If None, or
+                zero, 1e-4 is used. (default: None)
+            RTS_epochs (int) : Number of forward EKF and backward RTS passes. (default: 1)
+            verbosity (bool) : If false, removes printout of operations. (default: True)
+            LBFGS_refinement (bool) : If True, refine the RTS solution via L-BFGS optimization. (default: True)
+            LBFGS_rho_x0 (float) : L2-regularization used by L-BFGS. (default: 0.)
+            lbfgs_epochs (int) : Max number of L-BFGS iterations. (default: 1000)
+            Q (ndarray) : Process noise covariance matrix. If None, 1.e-5*I is applied. (default: None)
+            R (ndarray) : Measurement noise covariance matrix. If None, the identity matrix I is applied. (default: None)
+
+        Returns:
+            x0 (ndarary or list of ndararys) : Estimated initial states.
+        """
         if self.rho_x0 == 0. and (rho_x0 is None or rho_x0 <= 0.):
             rho_x0 = 1e-4  # learn_x0 method uses rho_x0 to initialize covariance matrix, so it should be larger than zero
         U_norm, _, _ = normalize_data(U, self.norm['u_mean'], self.norm['u_std'])
@@ -1012,8 +1066,42 @@ class SUBNET_innovation(SUBNET):
 
 
 class SUBNET_separated_noise_model(SUBNET_innovation):
-    def __init__(self, nx, nz, ny, nu, norm=None, fx_args={}, hx_args={}, fz_args={}, hz_args={}, use_encoder=True,
-                 encoder_lag=10, encoder_args={}, seed=0, warm_start_params=None, freeze_plant_model=False):
+    """SUBNET model implementation with separate process and noise model parametrization for identifying discrete-time
+    ANN-SS models with process  noise structures. For more information about the method: https://arxiv.org/pdf/2504.11982"""
+    def __init__(self, nx: int, nz: int, ny: int, nu: int, norm=None, fx_args={}, hx_args={}, fz_args={}, hz_args={},
+                 use_encoder=True, encoder_lag=10, encoder_args={}, seed=0, warm_start_params=None, freeze_plant_model=False):
+        """ Initializes the model structure.
+
+        Args:
+            nx (int) : Model state dimension.
+            nz (int) : Dimension of the inverse noise process state.
+            ny (int) : Output dimension.
+            nu (int) : Input dimension.
+            norm (dict) : Dictionary containing the mean and standard deviation values for normalization. If None,
+                no normalization is applied (i.e., zero-mean and standard deviation of 1 is assumed). (default: None)
+            fx_args (dict) : Dictionary containing the hyperparameters of the ANN structure for the state transition
+                function of the process model. Dictionary entries are 'hidden_layers' specifying the number of hidden
+                layers, 'nodes_per_layer' specifying the applied number of nodes (neurons) per layer, and 'activation'
+                for the activation function.
+            hx_args (dict) : Dictionary containing the hyperparameters of the ANN structure for the output map function
+                for the process model. Dictionary entries are the same as for ``f_args``, with the addition of
+                'feedthrough' (bool) which indicates weather the current output values depends on the current input value
+                (True) or not (False).
+            fz_args (dict) : Dictionary containing the hyperparameters of the ANN structure for the state transition of
+                the inverse noise model. Dictionary entries are the same as for `fx_args`.
+            hz_args (dict) : Dictionary containing the hyperparameters of the ANN structure for the output map of
+                the inverse noise model. Dictionary entries are the same as for `hx_args`.
+            use_encoder (bool) : Whether to use encoder or not. (default: True)
+            encoder_lag (int) : Encoder lag for state reconstruction, i.e., the number of past IO data used for
+                estimating x0. (default: True)
+            encoder_args (dict) : Dictionary containing the hyperparameters of the ANN structure for the encoder.
+                Dictionary entries are the same as for ``f_args``.
+            seed (int) : Random seed for initialization. (default: 0)
+            warm_start_params (list of ndarrays) : If not None, these parameters are used for initializing the process
+                part. (default: None)
+            freeze_plant_model (bool) : If True and warm_start_params is not None, then the process part is frozen and
+                only the noise model (and encoder model)is trained. (default: False)
+        """
         super().__init__(nx=nx, ny=ny, nu=nu, norm=norm, use_encoder=use_encoder, encoder_lag=encoder_lag)
 
         self.nx = nx + nz
@@ -1088,6 +1176,7 @@ class SUBNET_separated_noise_model(SUBNET_innovation):
         self.init(init_params)
 
     def generate_SS_forward_function(self):
+        """Generates the SS_forward function that performs a step of the model. With both the process and noise part."""
         @jax.jit
         def SS_forward(xz, uy, th, sat):
             """
@@ -1120,41 +1209,12 @@ class SUBNET_separated_noise_model(SUBNET_innovation):
 
         return SS_forward
 
-    def learn_x0_single(self, U, Y, rho_x0=None, RTS_epochs=1, verbosity=True, LBFGS_refinement=False,
-                    LBFGS_rho_x0=1.e-8, lbfgs_epochs=1000, Q=None, R=None):
-        # TODO: update docstring
-        """Estimate x0 by Rauch–Tung–Striebel smoothing (Sarkka and Svenson, 2023, p.268),
-        possibly followed by L-BFGS optimization.
-
-        (C) 2023 A. Bemporad
-
-        Parameters
-        ----------
-        U : ndarray
-            Input data, U must be a N-by-nu numpy array
-        Y : ndarray
-            Output data, Y must be a N-by-ny numpy array
-        rho_x0 : float
-            L2-regularization on initial state x0, 0.5*rho_x0*||x0||_2^2 (default: model.rho_x0)
-        RTS_epochs : int
-            Number of forward KF and backward RTS passes
-        verbosity : bool
-            If false, removes printout of operations
-        LBFGS_refinement : bool
-            If True, refine solution via L-BFGS optimization. Also used in the case bounds on x0 have been specified and the value of x0 estimated by RTS is not feasible.
-        LBFGS_rho_x0 : float
-            L2-regularization used by L-BFGS, by default 1.e-8
-        lbfgs_epochs : int
-            Max number of L-BFGS iterations
-        Q : ndarray
-            Process noise covariance matrix, by default 1.e-5*I. Matrix Q could be set smaller (e.g., 1.e-8*I),although in the case of very good models the covariance matrix of the state estimation error may become very small and RTS smoothing numerically unstable, and higher values of Q should be used.
-        R : ndarray
-            Measurement noise covariance matrix, by default the identity matrix I
-
-        Returns
-        -------
-        array
-            Optimal initial state x0.
+    def learn_x0_single(self, U: np.ndarray, Y: np.ndarray, rho_x0=None, RTS_epochs=1, verbosity=True,
+                        LBFGS_refinement=True, LBFGS_rho_x0=0., lbfgs_epochs=1000, Q=None, R=None):
+        """Helper function for learn_xo. Estimates x0 for a single measurement record by L-BFGS optimization, and
+        provides an initial guess by Rauch–Tung–Striebel smoothing. The EKF and RTS part only considers the deterministic
+        part of the model, while the L-BFGS-based optimization takes the full model into account with the innovation noise
+        structure.
         """
         nx = self.nx
         ny = self.ny
@@ -1327,32 +1387,42 @@ class SUBNET_separated_noise_model(SUBNET_innovation):
         return x
 
     def simulate(self, xz0, U):
-        # TODO: add docstring
+        """Simulates the model on a test data. Automatic normalization and back-scaling is applied. For simulation,
+        only the process part is evaluated.
+
+        Args:
+            x0 (ndarray or list of ndarrays) : Initial state to start the simulates, must be (model.nx,) shaped.
+                If the model is evaluated on multiple data sequences at the same time, this must be a list, containing
+                the estimated initial states.
+            U (ndarray ir list of ndarrays) : Input for simulation as an N-by-nu numpy array. If the model is evaluated
+                on multiple data sequences at the same time, this must be a list of Ni-by-nu numpy arrays.
+
+        Returns:
+            Y_back_scaled (ndarray or list of ndarrays) : Back-scaled simulated output for each data sequence.
+            X (ndarray or list of ndarrays) : Simulated states for each data sequence.
+        """
         U_norm, _, _ = normalize_data(U, self.norm['u_mean'], self.norm['u_std'])
 
         @jax.jit
-        def model_step(xz, u):
-            x = xz[:self.nx_x]
-            z = xz[self.nx_x:]
-            x_plus = self.state_fcn(x, u, self.params)
+        def model_step(x, u):
+            x_plus = self.state_fcn(x, u, self.params).reshape(-1)
             yhat = self.output_fcn(x, u, self.params)
-            z_plus = self.noise_state_fcn(z, x, u, jnp.zeros(self.ny), self.params)  # for simulation assume zero output noise
-            yhat = yhat - self.noise_output_fcn(z, x, u, self.params)  # TODO: ask about simulation
-            x = jnp.hstack((x_plus, z_plus))
-            return x, yhat
+            return x_plus, yhat
 
         if isinstance(U_norm, list):
             N_meas = len(U_norm)
             Y = []
             X = []
             for i in range(N_meas):
-                x = xz0[i].copy().reshape(-1)
+                xz0_i = xz0[i].copy().reshape(-1)
+                x = xz0_i[:self.nx_x]
                 u = vec_reshape(U_norm[i])
                 _, YX = jax.lax.scan(model_step, x, u)
                 Y.append(YX[:, 0:self.ny])
                 X.append(YX[:, self.ny:])
         else:
-            x = xz0.copy().reshape(-1)
+            xz = xz0.copy().reshape(-1)
+            x = xz0[:self.nx_x]
             _, YX = jax.lax.scan(model_step, x, vec_reshape(U_norm))
             Y = YX[:, 0:self.ny]
             X = YX[:, self.ny:]
@@ -1360,8 +1430,24 @@ class SUBNET_separated_noise_model(SUBNET_innovation):
         Y_back_scaled = back_scale_data(Y, self.norm['y_mean'], self.norm['y_std'])
         return Y_back_scaled, X
 
-    def predict_one_step_ahead(self, xz0, U, Y):
-        # TODO: add docstring
+    def predict_one_step_ahead(self, xz0: np.ndarray | jnp.ndarray | list, U: np.ndarray | list, Y: np.ndarray | list):
+        """Predicts the model output on a test data in a one-ste-ahead manner. Automatic normalization and back-scaling
+        is applied. The current output values are only utilized for predicting the next state values with the innovation
+        noise structure.
+
+        Args:
+            xz0 (ndarray or list of ndarrays) : Combined initial process and noise state to start the predictions,
+                must be (model.nx,) shaped. If the model is evaluated on multiple data sequences at the same time, this
+                must be a list, containing the estimated initial states.
+            U (ndarray ir list of ndarrays) : Input for predictions as an N-by-nu numpy array. If the model is evaluated
+                on multiple data sequences at the same time, this must be a list of Ni-by-nu numpy arrays.
+            Y (ndarray or list of ndarrays) : Measured output values as an N-by-ny numpy array. If the model is evaluated
+                on multiple data sequences at the same time, this must be a list of Ni-by-ny numpy arrays.
+
+        Returns:
+            Y_back_scaled (ndarray or list of ndarrays) : Back-scaled simulated output for each data sequence.
+            X (ndarray or list of ndarrays) : Simulated states for each data sequence.
+        """
         U_norm, _, _ = normalize_data(U, self.norm['u_mean'], self.norm['u_std'])
         Y_norm, _, _ = normalize_data(Y, self.norm['y_mean'], self.norm['y_std'])
 
