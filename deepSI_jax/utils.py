@@ -2,25 +2,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 from jax_sysid.utils import vec_reshape
-
-
-def create_numpy_array_from_multiple_experiments(var_list: list) -> np.ndarray:
-    """Creates a numpy array from multiple experiments.
-
-    Args:
-        var_list (list) : List of Ni-by-n numpy arrays, where Ni is the length of the i-th experiment.
-
-    Returns:
-        var_array (ndarray) : A combined numpy array with all the experiments with shape N-by-n, where N = sum Ni.
-    """
-    var_array = np.array([])
-    for i in range(len(var_list)):
-        var_i = vec_reshape(var_list[i])
-        if i == 0:
-            var_array = var_i
-        else:
-            var_array = np.vstack((var_array, var_i))
-    return var_array
+from deepSI_jax.data_prep import create_ndarray_from_list
 
 
 def mean_squared_error(Y: np.ndarray|list, Yhat: np.ndarray|list, per_channel=False):
@@ -35,10 +17,10 @@ def mean_squared_error(Y: np.ndarray|list, Yhat: np.ndarray|list, per_channel=Fa
         mse (float or ndarray) : The mean-squared error between Yhat and Y.
     """
     if isinstance(Y, list):
-        Y = create_numpy_array_from_multiple_experiments(Y)
-        Yhat = create_numpy_array_from_multiple_experiments(Yhat)
-    Y = vec_reshape(Y)
-    Yhat = vec_reshape(Yhat)
+        Y = create_ndarray_from_list(Y.copy())
+        Yhat = create_ndarray_from_list(Yhat.copy())
+    Y = vec_reshape(Y.copy())
+    Yhat = vec_reshape(Yhat.copy())
     error = Y - Yhat  # (N, ny)
     mse = np.mean(error**2, axis=0)
     if not per_channel:
@@ -72,11 +54,11 @@ def NRMS_error(Y: np.ndarray|list, Yhat: np.ndarray|list, per_channel=False):
     Returns:
         nrmse (float or ndarray) : The normalized root-mean-squared error between Yhat and Y.
     """
-    rmse = RMS_error(Y, Yhat, per_channel=True)
+    rmse = RMS_error(Y.copy(), Yhat, per_channel=True)
     if isinstance(Y, list):
-        y_std = np.std(create_numpy_array_from_multiple_experiments(Y), axis=0)
+        y_std = np.std(create_ndarray_from_list(Y.copy()), axis=0)
     else:
-        y_std = np.std(vec_reshape(Y), axis=0)
+        y_std = np.std(vec_reshape(Y.copy()), axis=0)
     nrmse = rmse / y_std
     if not per_channel:
         nrmse = np.mean(nrmse)

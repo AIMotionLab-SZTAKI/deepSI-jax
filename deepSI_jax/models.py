@@ -165,8 +165,8 @@ class SUBNET(Model):
             x0 (ndarray or liost of ndarrays) : The estimated initial state value or batched (list of jax.numpy arrays)
                 if multiple experiments are provided.
         """
-        Y_norm, _, _ = normalize_data(Y, self.norm['y_mean'], self.norm['y_std'])
-        U_norm, _, _ = normalize_data(U, self.norm['u_mean'], self.norm['u_std'])
+        Y_norm, _, _ = normalize_data(Y.copy(), self.norm['y_mean'], self.norm['y_std'])
+        U_norm, _, _ = normalize_data(U.copy(), self.norm['u_mean'], self.norm['u_std'])
         if isinstance(Y_norm, list):
             Nmeas = len(Y_norm)
             x0 = []
@@ -729,7 +729,7 @@ class SUBNET_innovation(SUBNET):
             Y_back_scaled (ndarray or list of ndarrays) : Back-scaled simulated output for each data sequence.
             X (ndarray or list of ndarrays) : Simulated states for each data sequence.
         """
-        U_norm, _, _ = normalize_data(U, self.norm['u_mean'], self.norm['u_std'])
+        U_norm, _, _ = normalize_data(U.copy(), self.norm['u_mean'], self.norm['u_std'])
 
         @jax.jit
         def model_step(x, u):
@@ -775,8 +775,8 @@ class SUBNET_innovation(SUBNET):
             Y_back_scaled (ndarray or list of ndarrays) : Back-scaled simulated output for each data sequence.
             X (ndarray or list of ndarrays) : Simulated states for each data sequence.
         """
-        U_norm, _, _ = normalize_data(U, self.norm['u_mean'], self.norm['u_std'])
-        Y_norm, _, _ = normalize_data(Y, self.norm['y_mean'], self.norm['y_std'])
+        U_norm, _, _ = normalize_data(U.copy(), self.norm['u_mean'], self.norm['u_std'])
+        Y_norm, _, _ = normalize_data(Y.copy(), self.norm['y_mean'], self.norm['y_std'])
 
         @jax.jit
         def model_step(x, uy):
@@ -1050,8 +1050,8 @@ class SUBNET_innovation(SUBNET):
         """
         if self.rho_x0 == 0. and (rho_x0 is None or rho_x0 <= 0.):
             rho_x0 = 1e-4  # learn_x0 method uses rho_x0 to initialize covariance matrix, so it should be larger than zero
-        U_norm, _, _ = normalize_data(U, self.norm['u_mean'], self.norm['u_std'])
-        Y_norm, _, _ = normalize_data(Y, self.norm['y_mean'], self.norm['y_std'])
+        U_norm, _, _ = normalize_data(U.copy(), self.norm['u_mean'], self.norm['u_std'])
+        Y_norm, _, _ = normalize_data(Y.copy(), self.norm['y_mean'], self.norm['y_std'])
 
         if isinstance(U_norm, list):
             Nexp = len(U_norm)
@@ -1386,12 +1386,12 @@ class SUBNET_separated_noise_model(SUBNET_innovation):
                     f"\nFinal loss MSE (after LBFGS refinement) = {mse_loss: 8.6f}")
         return x
 
-    def simulate(self, xz0, U):
+    def simulate(self, xz0: np.ndarray | jnp.ndarray | list, U: np.ndarray|list):
         """Simulates the model on a test data. Automatic normalization and back-scaling is applied. For simulation,
         only the process part is evaluated.
 
         Args:
-            x0 (ndarray or list of ndarrays) : Initial state to start the simulates, must be (model.nx,) shaped.
+            xz0 (ndarray or list of ndarrays) : Initial state to start the simulates, must be (model.nx,) shaped.
                 If the model is evaluated on multiple data sequences at the same time, this must be a list, containing
                 the estimated initial states.
             U (ndarray ir list of ndarrays) : Input for simulation as an N-by-nu numpy array. If the model is evaluated
@@ -1401,12 +1401,12 @@ class SUBNET_separated_noise_model(SUBNET_innovation):
             Y_back_scaled (ndarray or list of ndarrays) : Back-scaled simulated output for each data sequence.
             X (ndarray or list of ndarrays) : Simulated states for each data sequence.
         """
-        U_norm, _, _ = normalize_data(U, self.norm['u_mean'], self.norm['u_std'])
+        U_norm, _, _ = normalize_data(U.copy(), self.norm['u_mean'], self.norm['u_std'])
 
         @jax.jit
         def model_step(x, u):
             x_plus = self.state_fcn(x, u, self.params).reshape(-1)
-            yhat = self.output_fcn(x, u, self.params)
+            yhat = jnp.hstack((self.output_fcn(x, u, self.params), x))
             return x_plus, yhat
 
         if isinstance(U_norm, list):
@@ -1422,7 +1422,7 @@ class SUBNET_separated_noise_model(SUBNET_innovation):
                 X.append(YX[:, self.ny:])
         else:
             xz = xz0.copy().reshape(-1)
-            x = xz0[:self.nx_x]
+            x = xz[:self.nx_x]
             _, YX = jax.lax.scan(model_step, x, vec_reshape(U_norm))
             Y = YX[:, 0:self.ny]
             X = YX[:, self.ny:]
@@ -1448,8 +1448,8 @@ class SUBNET_separated_noise_model(SUBNET_innovation):
             Y_back_scaled (ndarray or list of ndarrays) : Back-scaled simulated output for each data sequence.
             X (ndarray or list of ndarrays) : Simulated states for each data sequence.
         """
-        U_norm, _, _ = normalize_data(U, self.norm['u_mean'], self.norm['u_std'])
-        Y_norm, _, _ = normalize_data(Y, self.norm['y_mean'], self.norm['y_std'])
+        U_norm, _, _ = normalize_data(U.copy(), self.norm['u_mean'], self.norm['u_std'])
+        Y_norm, _, _ = normalize_data(Y.copy(), self.norm['y_mean'], self.norm['y_std'])
 
         @jax.jit
         def model_step(xz, uy):
