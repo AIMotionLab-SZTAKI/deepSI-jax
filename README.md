@@ -16,6 +16,7 @@ git clone https://github.com/AIMotionLab-SZTAKI/deepSI-jax
 ```
 To install the package and its dependencies (it is advised to use a virtual environment):
 ```
+cd deepSI-jax
 pip install -e .
 ```
 
