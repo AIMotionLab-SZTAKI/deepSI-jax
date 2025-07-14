@@ -1404,31 +1404,35 @@ class SUBNET_separated_noise_model(SUBNET_innovation):
         U_norm, _, _ = normalize_data(U.copy(), self.norm['u_mean'], self.norm['u_std'])
 
         @jax.jit
-        def model_step(x, u):
-            x_plus = self.state_fcn(x, u, self.params).reshape(-1)
-            yhat = jnp.hstack((self.output_fcn(x, u, self.params), x))
-            return x_plus, yhat
+        def model_step(xz, u):
+            x = xz[:self.nx_x]
+            z = xz[self.nx_x:]
+            x_plus = self.state_fcn(x, u, self.params)
+            yhat = self.output_fcn(x, u, self.params)
+            e = - self.noise_output_fcn(z, x, u, self.params)
+            z_plus = self.noise_state_fcn(z, x, u, e, self.params)
+            ypred = yhat + e
+            xz = jnp.hstack((x_plus, z_plus))
+            return xz, jnp.hstack((ypred, x, z))
 
         if isinstance(U_norm, list):
             N_meas = len(U_norm)
             Y = []
-            X = []
+            XZ = []
             for i in range(N_meas):
-                xz0_i = xz0[i].copy().reshape(-1)
-                x = xz0_i[:self.nx_x]
-                u = vec_reshape(U_norm[i])
+                x = xz0[i].copy().reshape(-1)
+                u = U_norm[i]
                 _, YX = jax.lax.scan(model_step, x, u)
                 Y.append(YX[:, 0:self.ny])
-                X.append(YX[:, self.ny:])
+                XZ.append(YX[:, self.ny:])
         else:
-            xz = xz0.copy().reshape(-1)
-            x = xz[:self.nx_x]
-            _, YX = jax.lax.scan(model_step, x, vec_reshape(U_norm))
+            x = xz0.copy().reshape(-1)
+            _, YX = jax.lax.scan(model_step, x, U_norm)
             Y = YX[:, 0:self.ny]
-            X = YX[:, self.ny:]
+            XZ = YX[:, self.ny:]
 
         Y_back_scaled = back_scale_data(Y, self.norm['y_mean'], self.norm['y_std'])
-        return Y_back_scaled, X
+        return Y_back_scaled, XZ
 
     def predict_one_step_ahead(self, xz0: np.ndarray | jnp.ndarray | list, U: np.ndarray | list, Y: np.ndarray | list):
         """Predicts the model output on a test data in a one-ste-ahead manner. Automatic normalization and back-scaling
@@ -1462,12 +1466,12 @@ class SUBNET_separated_noise_model(SUBNET_innovation):
             z_plus = self.noise_state_fcn(z, x, u, y - yhat, self.params)
             yhat = yhat - self.noise_output_fcn(z, x, u, self.params)
             xz = jnp.hstack((x_plus, z_plus))
-            return xz, yhat
+            return xz, jnp.hstack((yhat, x, z))
 
         if isinstance(U_norm, list):
             N_meas = len(U_norm)
             Y = []
-            X = []
+            XZ = []
             for i in range(N_meas):
                 x = xz0[i].copy().reshape(-1)
                 u = vec_reshape(U_norm[i])
@@ -1475,13 +1479,13 @@ class SUBNET_separated_noise_model(SUBNET_innovation):
                 uy = np.hstack((u, y))
                 _, YX = jax.lax.scan(model_step, x, uy)
                 Y.append(YX[:, 0:self.ny])
-                X.append(YX[:, self.ny:])
+                XZ.append(YX[:, self.ny:])
         else:
             x = xz0.copy().reshape(-1)
             UY = np.hstack((vec_reshape(U_norm), vec_reshape(Y_norm)))
             _, YX = jax.lax.scan(model_step, x, UY)
             Y = YX[:, 0:self.ny]
-            X = YX[:, self.ny:]
+            XZ = YX[:, self.ny:]
 
         Y_back_scaled = back_scale_data(Y, self.norm['y_mean'], self.norm['y_std'])
-        return Y_back_scaled, X
+        return Y_back_scaled, XZ
