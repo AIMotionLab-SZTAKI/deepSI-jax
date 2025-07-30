@@ -35,7 +35,7 @@ class SUBNET(Model):
                 estimating x0. (default: True)
             encoder_args (dict) : Dictionary containing the hyperparameters of the ANN structure for the encoder.
                 Dictionary entries are the same as for ``f_args``.
-            seed (int) : Random seed for initialization. (default: 0)
+            seed (int or list) : Random seed for initialization. List of random seeds for parallel training. (default: 0)
         """
 
         if norm is None:
@@ -47,18 +47,35 @@ class SUBNET(Model):
         else:
             self.norm = norm
 
+        self.parallel_init_fun = None
+
         set_default_net_struct_if_necessary(f_args)
         set_default_net_struct_if_necessary(h_args)
         if use_encoder:
             set_default_net_struct_if_necessary(encoder_args)
             self.encoder_lag = encoder_lag
-            f_net, h_net, self.encoder_fcn, init_params = gen_f_h_encoder_networks(nx=nx, ny=ny, nu=nu, encoder_lag=encoder_lag,
-                                                                                   f_args=f_args, h_args=h_args, encoder_args=encoder_args,
-                                                                                   seed=seed)
+            if isinstance(seed, int):
+                f_net, h_net, self.encoder_fcn, init_params = gen_f_h_encoder_networks(nx=nx, ny=ny, nu=nu, encoder_lag=encoder_lag,
+                                                                                       f_args=f_args, h_args=h_args, encoder_args=encoder_args,
+                                                                                       seed=seed)
+            elif isinstance(seed, list):
+                f_net, h_net, self.encoder_fcn, init_params = gen_f_h_encoder_networks(nx=nx, ny=ny, nu=nu, encoder_lag=encoder_lag,
+                                                                                       f_args=f_args, h_args=h_args, encoder_args=encoder_args,
+                                                                                       seed=seed[0])
+                self.parallel_init_fun = lambda s: gen_f_h_encoder_networks(nx=nx, ny=ny, nu=nu, encoder_lag=encoder_lag,f_args=f_args,
+                                                                            h_args=h_args, encoder_args=encoder_args, seed=s)[3]
+            else:
+                raise TypeError("Seed must be either a list or an int.")
         else:
             self.encoder_lag = 0
             self.encoder_fcn = None
-            f_net, h_net, init_params = gen_f_h_networks(nx=nx, ny=ny, nu=nu, f_args=f_args, h_args=h_args, seed=seed)
+            if isinstance(seed, int):
+                f_net, h_net, init_params = gen_f_h_networks(nx=nx, ny=ny, nu=nu, f_args=f_args, h_args=h_args, seed=seed)
+            elif isinstance(seed, list):
+                f_net, h_net, init_params = gen_f_h_networks(nx=nx, ny=ny, nu=nu, f_args=f_args, h_args=h_args, seed=seed[0])
+                self.parallel_init_fun = lambda s: gen_f_h_networks(nx=nx, ny=ny, nu=nu, f_args=f_args, h_args=h_args, seed=s)[2]
+            else:
+                raise TypeError("Seed must be either a list or an int.")
         super().__init__(nx=nx, ny=ny, nu=nu, state_fcn=f_net, output_fcn=h_net)
         self.init(params=init_params)
         self.isMultiShooting = False
@@ -630,6 +647,25 @@ class SUBNET(Model):
         self.sparsity = sparsity
         return
 
+    def fit_parallel(self, Y_train: np.ndarray | list, U_train : np.ndarray | list, seeds: list, n_jobs=None):
+        """Fits the model in parallel using multiple seeds.
+
+        Args:
+            Y (ndarray or list of ndararys) : Training dataset: output data. Y must be a N-by-ny numpy array
+                or a list of Ni-by-ny numpy arrays, where Ni is the length of the i-th experiment.
+            U (ndarray or list of ndararys) : ndarray or list of ndarrays
+                Training dataset: input data. U must be a N-by-nu numpy array
+                or a list of Ni-by-nu numpy arrays, where Ni is the length of the i-th experiment.
+            seeds (list): The seeds used for initialization.
+            n_jobs (int): The number of parallel jobs to run (default is None, which means using all available cores).
+
+        Returns:
+            models: A list of fitted models.
+        """
+
+        models = super().parallel_fit(Y=Y_train, U=U_train, init_fcn=self.parallel_init_fun, seeds=seeds, n_jobs=n_jobs)
+        return models
+
     def learn_x0(self, U: np.ndarray | list, Y: np.ndarray | list, rho_x0=None, RTS_epochs=1, verbosity=True,
                  LBFGS_refinement=True, LBFGS_rho_x0=0., lbfgs_epochs=1000, Q=None, R=None):
         """Estimate x0 by L-BFGS optimization, and providing an initial guess by Rauch–Tung–Striebel smoothing.
@@ -691,7 +727,7 @@ class SUBNET_innovation(SUBNET):
                 estimating x0. (default: True)
             encoder_args (dict) : Dictionary containing the hyperparameters of the ANN structure for the encoder.
                 Dictionary entries are the same as for ``f_args``.
-            seed (int) : Random seed for initialization. (default: 0)
+            seed (int or list) : Random seed for initialization or list of random seeds for parallel training. (default: 0)
         """
         super().__init__(nx=nx, ny=ny, nu=nu, norm=norm, f_args=f_args, h_args=h_args, use_encoder=use_encoder,
                          encoder_lag=encoder_lag, encoder_args=encoder_args, seed=seed)
@@ -702,14 +738,32 @@ class SUBNET_innovation(SUBNET):
         if use_encoder:
             set_default_net_struct_if_necessary(encoder_args)
             self.encoder_lag = encoder_lag
-            f_net, _, _, init_params = gen_f_h_encoder_networks(nx=nx, ny=ny, nu=nu, encoder_lag=encoder_lag, f_args=f_args,
-                                                                h_args=h_args, encoder_args=encoder_args, seed=seed,
-                                                                innovation_noise_struct=True)
+            if isinstance(seed, int):
+                f_net, _, _, init_params = gen_f_h_encoder_networks(nx=nx, ny=ny, nu=nu, encoder_lag=encoder_lag, f_args=f_args,
+                                                                    h_args=h_args, encoder_args=encoder_args, seed=seed,
+                                                                    innovation_noise_struct=True)
+            elif isinstance(seed, list):
+                f_net, _, _, init_params = gen_f_h_encoder_networks(nx=nx, ny=ny, nu=nu, encoder_lag=encoder_lag, f_args=f_args,
+                                                                    h_args=h_args, encoder_args=encoder_args, seed=seed[0],
+                                                                    innovation_noise_struct=True)
+                self.parallel_init_fun = lambda s: gen_f_h_encoder_networks(nx=nx, ny=ny, nu=nu, encoder_lag=encoder_lag, f_args=f_args,
+                                                                    h_args=h_args, encoder_args=encoder_args, innovation_noise_struct=True,
+                                                                    seed=s)[3]
+            else:
+                raise TypeError('Seed must be an int or a list.')
         else:
             self.encoder_lag = 0
             self.encoder_fcn = None
-            f_net, _, init_params = gen_f_h_networks(nx=nx, ny=ny, nu=nu, f_args=f_args, h_args=h_args, seed=seed,
-                                                     innovation_noise_struct=True)
+            if isinstance(seed, int):
+                f_net, _, init_params = gen_f_h_networks(nx=nx, ny=ny, nu=nu, f_args=f_args, h_args=h_args, seed=seed,
+                                                         innovation_noise_struct=True)
+            elif isinstance(seed, list):
+                f_net, _, init_params = gen_f_h_networks(nx=nx, ny=ny, nu=nu, f_args=f_args, h_args=h_args, seed=seed[0],
+                                                         innovation_noise_struct=True)
+                self.parallel_init_fun = lambda s: gen_f_h_networks(nx=nx, ny=ny, nu=nu, f_args=f_args, h_args=h_args,
+                                                                    innovation_noise_struct=True, seed=s)[2]
+            else:
+                raise TypeError('Seed must be an int or a list.')
 
         self.state_fcn = f_net
         self.init(params=init_params)
@@ -1112,6 +1166,13 @@ class SUBNET_separated_noise_model(SUBNET_innovation):
         set_default_net_struct_if_necessary(fz_args)
         set_default_net_struct_if_necessary(hz_args)
 
+        if isinstance(seed, int):
+            seed_i = seed
+        elif isinstance(seed, list):
+            seed_i = seed[0]
+        else:
+            raise TypeError("Seed must be either int or list")
+
         if use_encoder and not freeze_plant_model:
             set_default_net_struct_if_necessary(encoder_args)
             fx_net, hx_net, fz_net, hz_net, encoder_net, init_params = gen_fx_hx_fz_hz_encoder_networks(nx=nx, nz=nz, nu=nu, ny=ny,
@@ -1121,28 +1182,28 @@ class SUBNET_separated_noise_model(SUBNET_innovation):
                                                                                           fz_args=fz_args,
                                                                                           hz_args=hz_args,
                                                                                           encoder_args=encoder_args,
-                                                                                          seed=seed)
+                                                                                          seed=seed_i)
         elif not use_encoder and not freeze_plant_model:
             encoder_net = None
             fx_net, hx_net, fz_net, hz_net, init_params = gen_fx_hx_fz_hz_networks(nx=nx, nz=nz, nu=nu, ny=ny, fx_args=fx_args,
                                                                                    hx_args=hx_args, fz_args=fz_args,
-                                                                                   hz_args=hz_args, seed=seed)
+                                                                                   hz_args=hz_args, seed=seed_i)
         elif use_encoder and freeze_plant_model:
             set_default_net_struct_if_necessary(encoder_args)
-            fx_net, hx_net, fz_net, hz_net, encoder_net, init_params = gen_fx_hx_fz_hz_encoder_networks(nx=nx, nz=nz, nu=nu, ny=ny,
+            fx_net, hx_net, fz_net, hz_net, encoder_net, init_params = gen_separate_fx_hx_fz_hz_encoder_networks(nx=nx, nz=nz, nu=nu, ny=ny,
                                                                                           encoder_lag=encoder_lag,
                                                                                           fx_args=fx_args,
                                                                                           hx_args=hx_args,
                                                                                           fz_args=fz_args,
                                                                                           hz_args=hz_args,
                                                                                           encoder_args=encoder_args,
-                                                                                          seed=seed)
+                                                                                          seed=seed_i)
         else:   # no encoder and frozen plant parameters
             encoder_net = None
             fx_net, hx_net, fz_net, hz_net, init_params = gen_separate_fx_hx_fz_hz_networks(nx=nx, nz=nz, nu=nu, ny=ny,
                                                                                             fx_args=fx_args, hx_args=hx_args,
                                                                                             fz_args=fz_args, hz_args=hz_args,
-                                                                                            seed=seed)
+                                                                                            seed=seed_i)
 
         if warm_start_params is not None and not freeze_plant_model:
             # co-estimate plant+noise model, only use plant model parameters for warm-starting the optimization
@@ -1173,7 +1234,42 @@ class SUBNET_separated_noise_model(SUBNET_innovation):
             self.output_fcn = hx_net
         self.noise_state_fcn = fz_net
         self.noise_output_fcn = hz_net
+        if isinstance(seed, list):
+            self.parallel_init_fun = self.generate_init_fun(use_encoder, freeze_plant_model, nx, nz, nu, ny, encoder_lag,
+                                                            fx_args, hx_args, fz_args, hz_args, encoder_args, warm_start_params)
         self.init(init_params)
+
+    def generate_init_fun(self, use_encoder, freeze_plant_model, nx, nz, nu, ny, encoder_lag, fx_args, hx_args, fz_args,
+                          hz_args, encoder_args, warm_start_params):
+        def init_fun(seed):
+            if use_encoder and not freeze_plant_model:
+                init_params = gen_fx_hx_fz_hz_encoder_networks(nx=nx, nz=nz, nu=nu, ny=ny, encoder_lag=encoder_lag, fx_args=fx_args,
+                                                               hx_args=hx_args, fz_args=fz_args, hz_args=hz_args, encoder_args=encoder_args,
+                                                               seed=seed)[5]
+            elif not use_encoder and not freeze_plant_model:
+                init_params = gen_fx_hx_fz_hz_networks(nx=nx, nz=nz, nu=nu, ny=ny, fx_args=fx_args, hx_args=hx_args, fz_args=fz_args,
+                                                       hz_args=hz_args, seed=seed)[4]
+            elif use_encoder and freeze_plant_model:
+                init_params = gen_separate_fx_hx_fz_hz_encoder_networks(nx=nx, nz=nz, nu=nu, ny=ny, encoder_lag=encoder_lag,
+                                                                        fx_args=fx_args, hx_args=hx_args, fz_args=fz_args,
+                                                                        hz_args=hz_args, encoder_args=encoder_args, seed=seed)[5]
+            else:  # no encoder and frozen plant parameters
+                init_params = gen_separate_fx_hx_fz_hz_networks(nx=nx, nz=nz, nu=nu, ny=ny, fx_args=fx_args, hx_args=hx_args,
+                                                                fz_args=fz_args, hz_args=hz_args, seed=seed)[4]
+
+            if warm_start_params is not None and not freeze_plant_model:
+                # co-estimate plant+noise model, only use plant model parameters for warm-starting the optimization
+                deterministic_part_idx_end = 2 * fx_args['hidden_layers'] + 3 + 2 * hx_args['hidden_layers'] + 2
+                for i in range(deterministic_part_idx_end + 1):
+                    init_params[i] = warm_start_params[i]
+
+            if warm_start_params is not None and use_encoder:
+                # initialize encoder net to reconstruct x state as the pre-trained model and z state starts from random init.
+                init_params[-1] = init_params[-1].at[:self.nx_x, :].set(warm_start_params[-1])  # encoder residual weight
+                init_params[-2] = init_params[-2].at[:self.nx_x].set(warm_start_params[-2])  # encoder last layer's bias vector
+                init_params[-3] = init_params[-3].at[:self.nx_x, :].set(warm_start_params[-3])  # encoder last layer's weight matrix
+            return init_params
+        return init_fun
 
     def generate_SS_forward_function(self):
         """Generates the SS_forward function that performs a step of the model. With both the process and noise part."""

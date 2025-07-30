@@ -1,8 +1,9 @@
 import numpy as np
 import jax
 import jax.numpy as jnp
-from jax_sysid.utils import vec_reshape
+from joblib import Parallel, delayed, cpu_count
 from deepSI_jax.data_prep import create_ndarray_from_list
+from jax_sysid.utils import vec_reshape
 
 
 def mean_squared_error(Y: np.ndarray|list, Yhat: np.ndarray|list, per_channel=False):
@@ -80,3 +81,83 @@ def xsat(x: jnp.ndarray, sat: float|None):
         return x
     else:
         return jnp.minimum(jnp.maximum(x, -sat), sat)  # hard saturation
+
+
+def find_best_model(models, Y, U, use_encoder=False, X0=None, n_jobs=None, verbose=True, fit="RMSE", seeds=None, use_training_x0=False):
+    if not isinstance(models, list):
+        raise Exception(
+            "\033[1mPlease provide a list of models to compare.\033[0m")
+
+    if len(models) == 1:
+        return models[0]
+
+    if fit.lower() == 'rmse':
+        error_fun = RMS_error
+    elif fit.lower() == 'nrmse':
+        error_fun = NRMS_error
+    elif fit.lower() == 'mse':
+        error_fun = mean_squared_error
+
+    if isinstance(Y, list):
+        N_meas = len(Y)
+    else:
+        N_meas = 1
+
+    if use_training_x0:
+        X0 = []
+        for i in range(len(models)):
+            X0.append(models[i].x0)
+
+    def get_error_no_encoder(k):
+        if X0 is None and N_meas == 1:
+            x0 = models[k].learn_x0(U, Y)
+        elif X0 is None and N_meas > 1:
+            x0 = []
+            for i in range(N_meas):
+                x0i = models[k].learn_x0(U[i], Y[i])
+                x0.append(x0i)
+        else:
+            x0 = X0.copy()
+        Yhat, _ = models[k].simulate(x0, U)
+        return error_fun(Y, Yhat)
+
+    def get_error_encoder(k):
+        if N_meas == 1:
+            Y_lag = vec_reshape(Y)[:models[k].encoder_lag, :]
+            Y_true = vec_reshape(Y)[models[k].encoder_lag:, :]
+            U_lag = vec_reshape(U)[:models[k].encoder_lag, :]
+            x0 = models[k].encoder_estim_x0(Y_lag, U_lag)
+            Yhat, _ = models[k].simulate(x0, vec_reshape(U)[models[k].encoder_lag:, :])
+        else:  # N_meas > 1
+            Y_lag = [vec_reshape(y)[:models[k].encoder_lag, :]for y in Y]
+            Y_true = [vec_reshape(y)[models[k].encoder_lag:, :] for y in Y]
+            U_lag = [vec_reshape(u)[:models[k].encoder_lag, :]for u in U]
+            U_true = [vec_reshape(u)[models[k].encoder_lag:, :] for u in U]
+            x0 = models[k].encoder_estim_x0(Y_lag, U_lag)
+            Yhat, _ = models[k].simulate(x0, U_true)
+        return error_fun(Y_true, Yhat)
+
+    if n_jobs is None:
+        n_jobs = cpu_count()  # Use all available cores by default
+
+    if verbose:
+        print("Evaluating models...\n")
+
+    if use_encoder:
+        errors = Parallel(n_jobs=n_jobs)(delayed(get_error_encoder)(k) for k in range(len(models)))
+    else:
+        errors = Parallel(n_jobs=n_jobs)(delayed(get_error_no_encoder)(k) for k in range(len(models)))
+
+    # get the lowest error (lowest average error in case of multiple outputs)
+    best_id = np.nanargmin(np.sum(np.array(errors).reshape(len(models), -1), axis=1))
+
+    if verbose:
+        print("Errors:")
+        for k in range(len(models)):
+            print(f"Model {k}: {fit} = {errors[k]}")
+        if seeds is None:
+            print(f"Best model: {best_id}, error: {errors[best_id]}")
+        else:
+            print(f"Best model: {best_id}, score: {errors[best_id]} at seed {seeds[best_id]}")
+
+    return models[best_id]
