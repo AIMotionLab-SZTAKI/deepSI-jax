@@ -83,7 +83,25 @@ def xsat(x: jnp.ndarray, sat: float|None):
         return jnp.minimum(jnp.maximum(x, -sat), sat)  # hard saturation
 
 
-def find_best_model(models, Y, U, use_encoder=False, X0=None, n_jobs=None, verbose=True, fit="RMSE", seeds=None, use_training_x0=False):
+def find_best_model(models: list, Y: np.ndarray | list, U: np.ndarray | list, use_encoder=False, X0=None, n_jobs=None,
+                    verbose=True, fit="RMSE", seeds=None, use_training_x0=False):
+    """Finds best-performing model on a given data set.
+
+    Args:
+        models (list) : List of trained models.
+        Y (ndarray or list of ndarrays) : Output values with shape N-by-ny or a list of Ni-by-ny arrays.
+        U (ndarray or list of ndarrays) : Input values with shape N-by-nu or a list of Ni-by-nu arrays.
+        use_encoder (bool, optional) : Whether to use encoder network for state estimation when evaluating the models.
+            (default: False)
+        X0 (ndarray or list of ndarrays, optional) : If initial states are known corresponding to the use data-set, X0
+            can be provided. If None, the initial states are estimated. (default: None)
+        n_jobs (int, optional) : The number of parallel jobs to run. If None, all available CPU cores are used. (default: None)
+        verbose (bool, optional) : If True, prints information about the results. (default: True)
+        fit (str, optional) : Error metric used for evaluations. Available options are "RMSE", "NRMSE", and "MSE". (default: "RMSE")
+        seeds (list, optional) : If not None, and verbose is True, prints which seed provided the best model. (default: None)
+        use_training_x0 (bool, optional) : When models are evaluated based on the training data, there is a possibility
+            to use the optimized initial states for starting the simulations. (default: False)
+    """
     if not isinstance(models, list):
         raise Exception(
             "\033[1mPlease provide a list of models to compare.\033[0m")
@@ -97,6 +115,8 @@ def find_best_model(models, Y, U, use_encoder=False, X0=None, n_jobs=None, verbo
         error_fun = NRMS_error
     elif fit.lower() == 'mse':
         error_fun = mean_squared_error
+    else:
+        raise ValueError("\033[1mPlease provide a valid fit metric.\033[0m")
 
     if isinstance(Y, list):
         N_meas = len(Y)
@@ -107,6 +127,7 @@ def find_best_model(models, Y, U, use_encoder=False, X0=None, n_jobs=None, verbo
         X0 = []
         for i in range(len(models)):
             X0.append(models[i].x0)
+        use_encoder = False
 
     def get_error_no_encoder(k):
         if X0 is None and N_meas == 1:
