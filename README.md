@@ -3,7 +3,7 @@ JAX implementation of the deepSI toolbox for deep-learning-based identification 
 
 # Installation
 For day-to-day usage, the most convenient way for installation is:
-```
+```bash
 pip install git+https://github.com/AIMotionLab-SZTAKI/deepSI-jax@main
 ```
 (Installation directly from PyPI will be available soon...)
@@ -11,11 +11,11 @@ pip install git+https://github.com/AIMotionLab-SZTAKI/deepSI-jax@main
 <br>
 
 To be able to run the example scripts and/or modify the codebase, clone the repository:
-```
+```bash
 git clone https://github.com/AIMotionLab-SZTAKI/deepSI-jax
 ```
 To install the package and its dependencies (it is advised to use a virtual environment):
-```
+```bash
 cd deepSI-jax
 pip install -e .
 ```
