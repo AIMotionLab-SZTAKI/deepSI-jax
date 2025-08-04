@@ -51,8 +51,22 @@ class SUBNET(Model):
 
         set_default_net_struct_if_necessary(f_args)
         set_default_net_struct_if_necessary(h_args)
+        set_default_net_struct_if_necessary(encoder_args)
+
+        # group-lasso-related parameters
+        group_lasso_indices = dict()
+        group_lasso_indices["f_W0_idx"] = 0
+        group_lasso_indices["f_Wlast_idx"] = 2 * f_args['hidden_layers']
+        group_lasso_indices["f_blast_idx"] = 2 * f_args['hidden_layers'] + 1
+        group_lasso_indices["f_Wr_idx"] = 2 * f_args['hidden_layers'] + 2
+        group_lasso_indices["h_W0_idx"] = 2 * f_args['hidden_layers'] + 3
+        group_lasso_indices["h_Wr_idx"] = 2 * f_args['hidden_layers'] + 2 * h_args['hidden_layers'] + 5
+        group_lasso_indices["enc_Wlast_idx"] = 2 * f_args['hidden_layers'] + 2 * h_args['hidden_layers'] + 2 * encoder_args['hidden_layers'] + 6
+        group_lasso_indices["enc_blast_idx"] = 2 * f_args['hidden_layers'] + 2 * h_args['hidden_layers'] + 2 * encoder_args['hidden_layers'] + 7
+        group_lasso_indices["enc_Wr_idx"] = 2 * f_args['hidden_layers'] + 2 * h_args['hidden_layers'] + 2 * encoder_args['hidden_layers'] + 8
+        self.group_lasso_indices = group_lasso_indices
+
         if use_encoder:
-            set_default_net_struct_if_necessary(encoder_args)
             self.encoder_lag = encoder_lag
             if isinstance(seed, int):
                 f_net, h_net, self.encoder_fcn, init_params = gen_f_h_encoder_networks(nx=nx, ny=ny, nu=nu, encoder_lag=encoder_lag,
@@ -665,6 +679,90 @@ class SUBNET(Model):
 
         models = super().parallel_fit(Y=Y_train, U=U_train, init_fcn=self.parallel_init_fun, seeds=seeds, n_jobs=n_jobs)
         return models
+
+    def add_group_lasso_x(self, tau_x: float):
+        """Adds group-lasso regularization of the states to the model.
+
+        Args:
+            tau_x (float): group-lasso regularization coefficient.
+        """
+        idxs = self.group_lasso_indices
+        @jax.jit
+        def groupLassoReg(th, x0):
+            cost = 0.
+            f_W0 = th[idxs["f_W0_idx"]]
+            f_Wlast = th[idxs["f_Wlast_idx"]]
+            f_blast = th[idxs["f_blast_idx"]]
+            f_Wr = th[idxs["f_Wr_idx"]]
+            h_W0 = th[idxs["h_W0_idx"]]
+            h_Wr = th[idxs["h_Wr_idx"]]
+            if self.isEncoderUsed:
+                enc_Wlast = th[idxs["enc_Wlast_idx"]]
+                enc_blast = th[idxs["enc_blast_idx"]]
+                enc_Wr = th[idxs["enc_Wr_idx"]]
+
+            for i in range(self.nx):
+                cost += (jnp.sum(f_W0[:, i]**2) + jnp.sum(f_Wlast[i, :]**2) + f_blast[i]**2 + jnp.sum(f_Wr[:, i]**2) +
+                         jnp.sum(f_Wr[i, :]**2) - f_Wr[i, i]**2 + jnp.sum(h_W0[:, i]**2) + jnp.sum(h_Wr[:, i]**2))
+                if self.isEncoderUsed:
+                    # if encoder is used
+                    cost += jnp.sum(enc_Wlast[i, :]**2) + enc_blast[i]**2 + jnp.sum(enc_Wr[i, :]**2)
+                else:
+                    # if x0 is parametrized and co-estimated with model parameters
+                    cost += sum([x0j[i]**2 for x0j in x0])
+            return jnp.sqrt(cost)
+        self.tau_g = tau_x
+        self.group_lasso_fcn = groupLassoReg
+
+    def sparsity_analysis(self):
+        """Performs sparsity analysis on the model parameters and determines which state dimensions are redundant (thus unnecessary).
+
+        Returns:
+            The modified state dimension (the original state dimension minus the eliminated dimensions)
+        """
+        th = self.params
+        idxs = self.group_lasso_indices
+
+        f_W0 = np.array(th[idxs["f_W0_idx"]])
+        f_Wlast = np.array(th[idxs["f_Wlast_idx"]])
+        f_blast = np.array(th[idxs["f_blast_idx"]])
+        f_Wr = np.array(th[idxs["f_Wr_idx"]])
+        h_W0 = np.array(th[idxs["h_W0_idx"]])
+        h_Wr = np.array(th[idxs["h_Wr_idx"]])
+        if self.isEncoderUsed:
+            enc_Wlast = np.array(th[idxs["enc_Wlast_idx"]])
+            enc_blast = np.array(th[idxs["enc_blast_idx"]])
+            enc_Wr = np.array(th[idxs["enc_Wr_idx"]])
+
+        # zero-out coefficients smaller than self.zero_coeff
+        f_W0[np.abs(f_W0) <= self.zero_coeff] = 0.
+        f_Wlast[np.abs(f_Wlast) <= self.zero_coeff] = 0.
+        f_blast[np.abs(f_blast) <= self.zero_coeff] = 0.
+        f_Wr[np.abs(f_Wr) <= self.zero_coeff] = 0.
+        h_W0[np.abs(h_W0) <= self.zero_coeff] = 0.
+        h_Wr[np.abs(h_Wr) <= self.zero_coeff] = 0.
+        if self.isEncoderUsed:
+            enc_Wlast[np.abs(enc_Wlast) <= self.zero_coeff] = 0.
+            enc_blast[np.abs(enc_blast) <= self.zero_coeff] = 0.
+            enc_Wr[np.abs(enc_Wr) <= self.zero_coeff] = 0.
+
+        state_reduction = 0
+        print("Sparsity analysis...")
+        for i in range(self.nx):
+            if (np.max(np.abs(f_W0[:, i])) <= self.zero_coeff and np.max(np.abs(f_Wlast[i, :])) <= self.zero_coeff and
+                np.abs(f_blast[i]) <= self.zero_coeff and np.max(np.abs(f_Wr[:, i])) <= self.zero_coeff and
+                np.max(np.abs(f_Wr[i, :])) <= self.zero_coeff and np.max(np.abs(h_W0[:, i])) <= self.zero_coeff and
+                np.max(np.abs(h_Wr[:, i])) <= self.zero_coeff):
+                if self.isEncoderUsed:
+                    if (np.max(np.abs(enc_Wlast[i, :])) <= self.zero_coeff and np.abs(enc_blast[i]) <= self.zero_coeff and
+                        np.max(np.abs(enc_Wr[i, :])) <= self.zero_coeff):
+                        state_reduction += 1
+                        print(f"x_{i+1} can be eliminated")
+                else:
+                    state_reduction += 1
+                    print(f"x_{i + 1} can be eliminated")
+        print(f"Final state dimension: {self.nx-state_reduction}")
+        return self.nx - state_reduction
 
     def learn_x0(self, U: np.ndarray | list, Y: np.ndarray | list, rho_x0=None, RTS_epochs=1, verbosity=True,
                  LBFGS_refinement=True, LBFGS_rho_x0=0., lbfgs_epochs=1000, Q=None, R=None):
