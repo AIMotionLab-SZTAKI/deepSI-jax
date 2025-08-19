@@ -1,7 +1,12 @@
 import jax
 import jax.numpy as jnp
+from jax._src.prng import PRNGKeyArray
 import numpy as np
 import flax.linen as nn
+
+
+epsilon_z = 1e-4  # small constant to avoid division by zero
+tol_z = 1e-6   # tolerance for which z and v are considered zero
 
 
 def set_default_net_struct_if_necessary(struct_dict: dict[str, int|str|bool]):
@@ -20,7 +25,7 @@ def set_default_net_struct_if_necessary(struct_dict: dict[str, int|str|bool]):
         struct_dict['feedthrough'] = True
 
 
-def initialize_weights_and_biases(layer_units: list, input_features: int, seed=0):
+def initialize_weights_and_biases(layer_units: list, input_features: int, key: PRNGKeyArray):
     """Initializes the parameters of an ANN with the same default method as pytorch.
 
     Args:
@@ -37,34 +42,31 @@ def initialize_weights_and_biases(layer_units: list, input_features: int, seed=0
         jax.config.update("jax_enable_x64", True)
 
     weights_and_bias = []
+    key_carry, key_w, key_b = jax.random.split(key, 3)
 
     for i, units in enumerate(layer_units):
         if i == 0:
             # first layer weight has dim (num_units, input shape)
             init_bnd = np.sqrt(1 / input_features)
-            w = jax.random.uniform(key=jax.random.PRNGKey(seed), shape=(units, input_features), minval=-init_bnd,
-                                   maxval=init_bnd, dtype=jnp.float64)
-            b = jax.random.uniform(key=jax.random.PRNGKey(seed), minval=-init_bnd, maxval=init_bnd, shape=(units,),
-                                   dtype=jnp.float64)
+            w = jax.random.uniform(key=key_w, shape=(units, input_features), minval=-init_bnd, maxval=init_bnd, dtype=jnp.float64)
+            b = jax.random.uniform(key=key_b, minval=-init_bnd, maxval=init_bnd, shape=(units,), dtype=jnp.float64)
         else:
             # if not first layer
+            key_carry, key_w, key_b = jax.random.split(key_carry, 3)
             init_bnd = np.sqrt(1 / layer_units[i-1])
-            w = jax.random.uniform(key=jax.random.PRNGKey(seed), shape=(units, layer_units[i-1]), minval=-init_bnd,
-                                   maxval=init_bnd, dtype=jnp.float64)
-            b = jax.random.uniform(key=jax.random.PRNGKey(seed), minval=-init_bnd, maxval=init_bnd, shape=(units,),
-                                   dtype=jnp.float64)
+            w = jax.random.uniform(key=key_w, shape=(units, layer_units[i-1]), minval=-init_bnd, maxval=init_bnd, dtype=jnp.float64)
+            b = jax.random.uniform(key=key_b, minval=-init_bnd, maxval=init_bnd, shape=(units,), dtype=jnp.float64)
         # append weights
         weights_and_bias.append(w)
         weights_and_bias.append(b)
     # add residual component: weight has (output dim, input_dim) shape and no bias is applied
     init_bnd = np.sqrt(1 / input_features)
-    w = jax.random.uniform(key=jax.random.PRNGKey(seed), shape=(layer_units[-1], input_features), minval=-init_bnd,
-                           maxval=init_bnd, dtype=jnp.float64)
+    w = jax.random.uniform(key=key_carry, shape=(layer_units[-1], input_features), minval=-init_bnd, maxval=init_bnd, dtype=jnp.float64)
     weights_and_bias.append(w)
     return weights_and_bias
 
 
-def initialize_network(input_features: int, output_features: int, hidden_layers: int, nodes_per_layer: int, seed: int):
+def initialize_network(input_features: int, output_features: int, hidden_layers: int, nodes_per_layer: int, key: PRNGKeyArray):
     """Creates list containing the number of nodes per layer in the ANN, then calls ``initialize_weights_and_biases``
     to initialize the parameters of the network.
 
@@ -73,7 +75,7 @@ def initialize_network(input_features: int, output_features: int, hidden_layers:
         output_features (int) : Dimension of the output vector.
         hidden_layers (int) : Number of hidden layers.
         nodes_per_layer (int) : Number of nodes per layer regarding the hidden layers..
-        seed (int) : Seed for initialization.
+        key (PRNGKeyArray) : random key for initialization.
 
     Returns:
         The initialized parameters of the ANN.
@@ -83,8 +85,12 @@ def initialize_network(input_features: int, output_features: int, hidden_layers:
     for i in range(hidden_layers-1):
         net_units.append(nodes_per_layer)
     net_units.append(output_features)
-    parameters = initialize_weights_and_biases(layer_units=net_units, input_features=input_features, seed=seed)
+    parameters = initialize_weights_and_biases(layer_units=net_units, input_features=input_features, key=key)
     return parameters
+
+
+relu = lambda x: jnp.maximum(jnp.zeros_like(a=x), x)
+
 
 def activation(x, activation=None):
     """Dense ANN layer with optional activation function.
@@ -101,7 +107,7 @@ def activation(x, activation=None):
     if activation == None:
         y =  x
     elif activation == 'relu':
-        y = jnp.maximum(jnp.zeros_like(a=x), x)
+        y = relu(x)
     elif activation == 'tanh':
         y = jnp.tanh(x)
     elif activation == 'sigmoid':
@@ -217,21 +223,23 @@ def gen_f_h_encoder_networks(nx: int, ny: int, nu: int, encoder_lag: int, f_args
         y_out = y_next @ W.T + b + yu_hist @ W_res.T
         return y_out
 
+    key = jax.random.key(seed)
+    key_f, key_h, key_enc = jax.random.split(key, 3)
+
     if innovation_noise_struct:
         f_input_dim = nx + nu + ny
     else:
         f_input_dim = nx + nu
     f_init_params = initialize_network(input_features=f_input_dim, output_features=nx, hidden_layers=f_args['hidden_layers'],
-                                       nodes_per_layer=f_args['nodes_per_layer'], seed=seed)
+                                       nodes_per_layer=f_args['nodes_per_layer'], key=key_f)
     if h_args['feedthrough']:
         h_input_dim = nx + nu
     else:
         h_input_dim = nx
     h_init_params = initialize_network(input_features=h_input_dim, output_features=ny, hidden_layers=h_args['hidden_layers'],
-                                       nodes_per_layer=h_args['nodes_per_layer'], seed=seed)
-    encoder_init_params = initialize_network(input_features=encoder_lag*(ny+nu), output_features=nx,
-                                             hidden_layers=encoder_args['hidden_layers'], nodes_per_layer=encoder_args['nodes_per_layer'],
-                                             seed=seed)
+                                       nodes_per_layer=h_args['nodes_per_layer'], key=key_h)
+    encoder_init_params = initialize_network(input_features=encoder_lag*(ny+nu), output_features=nx, hidden_layers=encoder_args['hidden_layers'],
+                                             nodes_per_layer=encoder_args['nodes_per_layer'], key=key_enc)
 
     params = f_init_params
     params.extend(h_init_params)
@@ -322,18 +330,21 @@ def gen_f_h_networks(nx: int, ny: int, nu: int, f_args: dict[str, int|str], h_ar
         y_out = y_next @ W.T + b + input_val @ W_res.T
         return y_out
 
+    key = jax.random.key(seed)
+    key_f, key_h = jax.random.split(key, 2)
+
     if innovation_noise_struct:
         f_input_dim = nx + nu + ny
     else:
         f_input_dim = nx + nu
     f_init_params = initialize_network(input_features=f_input_dim, output_features=nx, hidden_layers=f_args['hidden_layers'],
-                                       nodes_per_layer=f_args['nodes_per_layer'], seed=seed)
+                                       nodes_per_layer=f_args['nodes_per_layer'], key=key_f)
     if h_args['feedthrough']:
         h_input_dim = nx + nu
     else:
         h_input_dim = nx
     h_init_params = initialize_network(input_features=h_input_dim, output_features=ny, hidden_layers=h_args['hidden_layers'],
-                                       nodes_per_layer=h_args['nodes_per_layer'], seed=seed)
+                                       nodes_per_layer=h_args['nodes_per_layer'], key=key_h)
 
     params = f_init_params
     params.extend(h_init_params)
@@ -474,25 +485,27 @@ def gen_fx_hx_fz_hz_encoder_networks(nx: int, nz: int, nu: int, ny: int, encoder
         y_out = y_next @ W.T + b + yu_hist @ W_res.T
         return y_out
 
+    key = jax.random.key(seed)
+    key_fx, key_hx, key_fz, key_hz, key_enc = jax.random.split(key, 5)
+
     fx_init_params = initialize_network(input_features=nx+nu, output_features=nx, hidden_layers=fx_args['hidden_layers'],
-                                        nodes_per_layer=fx_args['nodes_per_layer'], seed=seed)
+                                        nodes_per_layer=fx_args['nodes_per_layer'], key=key_fx)
     if hx_args['feedthrough']:
         hx_input_dim = nx + nu
     else:
         hx_input_dim = nx
     hx_init_params = initialize_network(input_features=hx_input_dim, output_features=ny, hidden_layers=hx_args['hidden_layers'],
-                                        nodes_per_layer=hx_args['nodes_per_layer'], seed=seed)
+                                        nodes_per_layer=hx_args['nodes_per_layer'], key=key_hx)
     fz_init_params = initialize_network(input_features=nz+nx+nu+ny, output_features=nz, hidden_layers=fz_args['hidden_layers'],
-                                        nodes_per_layer=fz_args['nodes_per_layer'], seed=seed)
+                                        nodes_per_layer=fz_args['nodes_per_layer'], key=key_fz)
     if hz_args['feedthrough']:
         hz_input_dim = nz + nx + nu
     else:
         hz_input_dim = nz + nx
     hz_init_params = initialize_network(input_features=hz_input_dim, output_features=ny, hidden_layers=hz_args['hidden_layers'],
-                                        nodes_per_layer=hz_args['nodes_per_layer'], seed=seed)
-    encoder_init_params = initialize_network(input_features=encoder_lag*(ny+nu), output_features=nx+nz,
-                                             hidden_layers=encoder_args['hidden_layers'], nodes_per_layer=encoder_args['nodes_per_layer'],
-                                             seed=seed)
+                                        nodes_per_layer=hz_args['nodes_per_layer'], key=key_hz)
+    encoder_init_params = initialize_network(input_features=encoder_lag*(ny+nu), output_features=nx+nz, hidden_layers=encoder_args['hidden_layers'],
+                                             nodes_per_layer=encoder_args['nodes_per_layer'], key=key_enc)
 
     params = fx_init_params
     params.extend(hx_init_params)
@@ -591,7 +604,10 @@ def gen_fx_hx_fz_hz_networks(nx: int, nz: int, nu: int, ny: int, fx_args: dict[s
         W_res = params[fz_idx0 + 2 * fz_args['hidden_layers'] + 2]
         # output with linear activation and residual component
         y_out = y_next @ W.T + b + input_val @ W_res.T
-        return y_out
+        # enforce fz=(0, ., ., 0) == 0
+        # z_zero = relu(jnp.abs(z) - tol_z * jnp.ones_like(z)) / (jnp.abs(z) + epsilon_z * jnp.ones_like(z))
+        # v_zero = relu(jnp.abs(v) - tol_z * jnp.ones_like(v)) / (jnp.abs(v) + epsilon_z * jnp.ones_like(v))
+        return y_out #* jnp.minimum(jnp.min(z_zero), jnp.min(v_zero))
 
     hz_idx0 = fz_idx0 + 2 * fz_args['hidden_layers'] + 3
 
@@ -614,28 +630,29 @@ def gen_fx_hx_fz_hz_networks(nx: int, nz: int, nu: int, ny: int, fx_args: dict[s
         W_res = params[hz_idx0 + 2 * hz_args['hidden_layers'] + 2]
         # output with linear activation and residual component
         y_out = y_next @ W.T + b + input_val @ W_res.T
-        return y_out
+        # enforce hz=(0, ., .) == 0
+        # z_zero = relu(jnp.abs(z) - tol_z * jnp.ones_like(z)) / (jnp.abs(z) + epsilon_z * jnp.ones_like(z))
+        return y_out #* jnp.min(z_zero)
 
-    fx_init_params = initialize_network(input_features=nx + nu, output_features=nx,
-                                        hidden_layers=fx_args['hidden_layers'],
-                                        nodes_per_layer=fx_args['nodes_per_layer'], seed=seed)
+    key = jax.random.key(seed)
+    key_fx, key_hx, key_fz, key_hz = jax.random.split(key, 4)
+
+    fx_init_params = initialize_network(input_features=nx + nu, output_features=nx, hidden_layers=fx_args['hidden_layers'],
+                                        nodes_per_layer=fx_args['nodes_per_layer'], key=key_fx)
     if hx_args['feedthrough']:
         hx_input_dim = nx + nu
     else:
         hx_input_dim = nx
-    hx_init_params = initialize_network(input_features=hx_input_dim, output_features=ny,
-                                        hidden_layers=hx_args['hidden_layers'],
-                                        nodes_per_layer=hx_args['nodes_per_layer'], seed=seed)
-    fz_init_params = initialize_network(input_features=nz + nx + nu + ny, output_features=nz,
-                                        hidden_layers=fz_args['hidden_layers'],
-                                        nodes_per_layer=fz_args['nodes_per_layer'], seed=seed)
+    hx_init_params = initialize_network(input_features=hx_input_dim, output_features=ny, hidden_layers=hx_args['hidden_layers'],
+                                        nodes_per_layer=hx_args['nodes_per_layer'], key=key_hx)
+    fz_init_params = initialize_network(input_features=nz + nx + nu + ny, output_features=nz, hidden_layers=fz_args['hidden_layers'],
+                                        nodes_per_layer=fz_args['nodes_per_layer'], key=key_fz)
     if hz_args['feedthrough']:
         hz_input_dim = nz + nx + nu
     else:
         hz_input_dim = nz + nx
-    hz_init_params = initialize_network(input_features=hz_input_dim, output_features=ny,
-                                        hidden_layers=hz_args['hidden_layers'],
-                                        nodes_per_layer=hz_args['nodes_per_layer'], seed=seed)
+    hz_init_params = initialize_network(input_features=hz_input_dim, output_features=ny, hidden_layers=hz_args['hidden_layers'],
+                                        nodes_per_layer=hz_args['nodes_per_layer'], key=key_hz)
 
     params = fx_init_params
     params.extend(hx_init_params)
@@ -755,17 +772,17 @@ def gen_separate_fx_hx_fz_hz_networks(nx: int, nz: int, nu: int, ny: int, fx_arg
         y_out = y_next @ W.T + b + input_val @ W_res.T
         return y_out
 
+    key = jax.random.key(seed)
+    key_fz, key_hz = jax.random.split(key, 2)
 
-    fz_init_params = initialize_network(input_features=nz + nx + nu + ny, output_features=nz,
-                                        hidden_layers=fz_args['hidden_layers'],
-                                        nodes_per_layer=fz_args['nodes_per_layer'], seed=seed)
+    fz_init_params = initialize_network(input_features=nz + nx + nu + ny, output_features=nz, hidden_layers=fz_args['hidden_layers'],
+                                        nodes_per_layer=fz_args['nodes_per_layer'], key=key_fz)
     if hz_args['feedthrough']:
         hz_input_dim = nz + nx + nu
     else:
         hz_input_dim = nz + nx
-    hz_init_params = initialize_network(input_features=hz_input_dim, output_features=ny,
-                                        hidden_layers=hz_args['hidden_layers'],
-                                        nodes_per_layer=hz_args['nodes_per_layer'], seed=seed)
+    hz_init_params = initialize_network(input_features=hz_input_dim, output_features=ny, hidden_layers=hz_args['hidden_layers'],
+                                        nodes_per_layer=hz_args['nodes_per_layer'], key=key_hz)
 
     # no need to initialize fx and hx as they are frozen
     noise_params = fz_init_params
@@ -907,17 +924,20 @@ def gen_separate_fx_hx_fz_hz_encoder_networks(nx: int, nz: int, nu: int, ny: int
         y_out = y_next @ W.T + b + yu_hist @ W_res.T
         return y_out
 
+    key = jax.random.key(seed)
+    key_fz, key_hz, key_enc = jax.random.split(key, 3)
+
     fz_init_params = initialize_network(input_features=nz+nx+nu+ny, output_features=nz, hidden_layers=fz_args['hidden_layers'],
-                                        nodes_per_layer=fz_args['nodes_per_layer'], seed=seed)
+                                        nodes_per_layer=fz_args['nodes_per_layer'], key=key_fz)
     if hz_args['feedthrough']:
         hz_input_dim = nz + nx + nu
     else:
         hz_input_dim = nz + nx
     hz_init_params = initialize_network(input_features=hz_input_dim, output_features=ny, hidden_layers=hz_args['hidden_layers'],
-                                        nodes_per_layer=hz_args['nodes_per_layer'], seed=seed)
+                                        nodes_per_layer=hz_args['nodes_per_layer'], key=key_hz)
     encoder_init_params = initialize_network(input_features=encoder_lag*(ny+nu), output_features=nx+nz,
                                              hidden_layers=encoder_args['hidden_layers'], nodes_per_layer=encoder_args['nodes_per_layer'],
-                                             seed=seed)
+                                             key=key_enc)
 
     # no need to initialize fx and hx
     params = fz_init_params

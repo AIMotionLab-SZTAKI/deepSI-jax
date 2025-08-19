@@ -1609,6 +1609,15 @@ class SUBNET_separated_noise_model(SUBNET_innovation):
             xz = jnp.hstack((x_plus, z_plus))
             return xz, jnp.hstack((ypred, x, z))
 
+        # @jax.jit
+        # def model_step(xz, u):
+        #     x = xz[:self.nx_x]
+        #     z = xz[self.nx_x:]
+        #     x_plus = self.state_fcn(x, u, self.params)
+        #     z_plus = np.zeros(self.nx_z)
+        #     yhat = self.output_fcn(x, u, self.params)
+        #     return jnp.hstack((x_plus, z_plus)), jnp.hstack((yhat, x, z))
+
         if isinstance(U_norm, list):
             N_meas = len(U_norm)
             Y = []
