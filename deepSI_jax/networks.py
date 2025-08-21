@@ -31,7 +31,7 @@ def initialize_weights_and_biases(layer_units: list, input_features: int, key: P
     Args:
         layer_units (list) : Listing the number of nodes (neurons) in the ANN.
         input_features (int) : Dimension of the input vector.
-        seed (int, optional) : Seed for initialization. (default: 0)
+        key (PRNGKeyArray) : Random key for initialization.
 
     Returns:
         weights_and_bias (list) : Listing of the initialized parameter values for the weights and biases of the ANN.
@@ -119,6 +119,24 @@ def activation(x, activation=None):
     return y
 
 
+def generate_simple_res_net(idx_start: int, hidden_layers: int, act_fun: str):
+    def net(net_in, params):
+        W = params[idx_start]
+        b = params[idx_start+1]
+        y_next = activation(net_in @ W.T + b, act_fun)
+        for i in range(hidden_layers - 1):
+            W = params[idx_start + 2*i + 2]
+            b = params[idx_start + 2*i + 3]
+            y_next = activation(y_next @ W.T + b, act_fun)
+        W = params[idx_start + 2*hidden_layers]
+        b = params[idx_start + 2*hidden_layers + 1]
+        W_res = params[idx_start + 2*hidden_layers + 2]
+        # output with linear activation and residual component
+        y_out = y_next @ W.T + b + net_in @ W_res.T
+        return y_out
+    return net
+
+
 def gen_f_h_encoder_networks(nx: int, ny: int, nu: int, encoder_lag: int, f_args: dict[str, int|str],
                              h_args: dict[str, int|str|bool], encoder_args: dict[str, int|str], seed=0,
                              innovation_noise_struct=False):
@@ -148,80 +166,38 @@ def gen_f_h_encoder_networks(nx: int, ny: int, nu: int, encoder_lag: int, f_args
         params (list of ndararys) : List containing the combined initial values for all ANNs in the model.
     """
 
+    f_ann = generate_simple_res_net(0, f_args['hidden_layers'], f_args['activation'])
+    h_idx0 = 2 * f_args['hidden_layers'] + 3
+    h_ann = generate_simple_res_net(h_idx0, h_args['hidden_layers'], h_args['activation'])
+    enc_idx0 = h_idx0 + 2 * h_args['hidden_layers'] + 3
+    enc_ann = generate_simple_res_net(enc_idx0, encoder_args['hidden_layers'], encoder_args['activation'])
+
     if innovation_noise_struct:
         @jax.jit
         def f_net(x, u, e, params):
             # f : (nx, nu, ny) --> nx
-            W = params[0]
-            b = params[1]
-            y_next = activation(jnp.hstack((x, u, e)) @ W.T + b, f_args['activation'])
-            for i in range(f_args['hidden_layers'] - 1):
-                W = params[2 * i + 2]
-                b = params[2 * i + 3]
-                y_next = activation(y_next @ W.T + b, f_args['activation'])
-            W = params[2 * f_args['hidden_layers']]
-            b = params[2 * f_args['hidden_layers'] + 1]
-            W_res = params[2 * f_args['hidden_layers'] + 2]
-            # output with linear activation and residual component
-            y_out = y_next @ W.T + b + jnp.hstack((x, u, e)) @ W_res.T
-            return y_out
+            net_in = jnp.hstack((x, u, e))
+            return f_ann(net_in, params)
     else:
         @jax.jit
         def f_net(x, u, params):
             # f : (nx, nu) --> nx
-            W = params[0]
-            b = params[1]
-            y_next = activation(jnp.hstack((x, u)) @ W.T + b, f_args['activation'])
-            for i in range(f_args['hidden_layers'] - 1):
-                W = params[2 * i + 2]
-                b = params[2 * i + 3]
-                y_next = activation(y_next @ W.T + b, f_args['activation'])
-            W = params[2 * f_args['hidden_layers']]
-            b = params[2 * f_args['hidden_layers'] + 1]
-            W_res = params[2 * f_args['hidden_layers'] + 2]
-            # output with linear activation and residual component
-            y_out = y_next @ W.T + b + jnp.hstack((x, u)) @ W_res.T
-            return y_out
+            net_in = jnp.hstack((x, u))
+            return f_ann(net_in, params)
 
-    h_idx0 = 2 * f_args['hidden_layers'] + 3
     @jax.jit
     def h_net(x, u, params):
         # f : (nx, nu) --> ny OR nx --> ny
         if h_args['feedthrough']:
-            input_val = jnp.hstack((x, u))
+            net_in = jnp.hstack((x, u))
         else:
-            input_val = x
-        W = params[h_idx0]
-        b = params[h_idx0 + 1]
-        y_next = activation(input_val @ W.T + b, h_args['activation'])
-        for i in range(h_args['hidden_layers'] - 1):
-            W = params[h_idx0 + 2 * i + 2]
-            b = params[h_idx0 + 2 * i + 3]
-            y_next = activation(y_next @ W.T + b, h_args['activation'])
-        W = params[h_idx0 + 2 * h_args['hidden_layers']]
-        b = params[h_idx0 + 2 * h_args['hidden_layers'] + 1]
-        W_res = params[h_idx0 + 2 * h_args['hidden_layers'] + 2]
-        # output with linear activation and residual component
-        y_out = y_next @ W.T + b + input_val @ W_res.T
-        return y_out
+            net_in = x
+        return h_ann(net_in, params)
 
-    enc_idx0 = h_idx0 + 2 * h_args['hidden_layers'] + 3
     @jax.jit
     def encoder_net(yu_hist, params):
         # e : (n*ny+n*nu) --> nx
-        W = params[enc_idx0]
-        b = params[enc_idx0 + 1]
-        y_next = activation(yu_hist @ W.T + b, encoder_args['activation'])
-        for i in range(encoder_args['hidden_layers'] - 1):
-            W = params[enc_idx0 + 2 * i + 2]
-            b = params[enc_idx0 + 2 * i + 3]
-            y_next = activation(y_next @ W.T + b, encoder_args['activation'])
-        W = params[enc_idx0 + 2 * encoder_args['hidden_layers']]
-        b = params[enc_idx0 + 2 * encoder_args['hidden_layers'] + 1]
-        W_res = params[enc_idx0 + 2 * encoder_args['hidden_layers'] + 2]
-        # output with linear activation and residual component
-        y_out = y_next @ W.T + b + yu_hist @ W_res.T
-        return y_out
+        return enc_ann(yu_hist, params)
 
     key = jax.random.key(seed)
     key_f, key_h, key_enc = jax.random.split(key, 3)
@@ -272,63 +248,31 @@ def gen_f_h_networks(nx: int, ny: int, nu: int, f_args: dict[str, int|str], h_ar
         params (list of ndararys) : List containing the combined initial values for all ANNs in the model.
     """
 
+    f_ann = generate_simple_res_net(0, f_args['hidden_layers'], f_args['activation'])
+    h_idx0 = 2 * f_args['hidden_layers'] + 3
+    h_ann = generate_simple_res_net(h_idx0, h_args['hidden_layers'], h_args['activation'])
+
     if innovation_noise_struct:
         @jax.jit
         def f_net(x, u, e, params):
             # f : (nx, nu, ny) --> nx
-            W = params[0]
-            b = params[1]
-            y_next = activation(jnp.hstack((x, u, e)) @ W.T + b, f_args['activation'])
-            for i in range(f_args['hidden_layers'] - 1):
-                W = params[2 * i + 2]
-                b = params[2 * i + 3]
-                y_next = activation(y_next @ W.T + b, f_args['activation'])
-            W = params[2 * f_args['hidden_layers']]
-            b = params[2 * f_args['hidden_layers'] + 1]
-            W_res = params[2 * f_args['hidden_layers'] + 2]
-            # output with linear activation and residual component
-            y_out = y_next @ W.T + b + jnp.hstack((x, u, e)) @ W_res.T
-            return y_out
+            net_in = jnp.hstack((x, u, e))
+            return f_ann(net_in, params)
     else:
         @jax.jit
         def f_net(x, u, params):
             # f : (nx, nu) --> nx
-            W = params[0]
-            b = params[1]
-            y_next = activation(jnp.hstack((x, u)) @ W.T + b, f_args['activation'])
-            for i in range(f_args['hidden_layers'] - 1):
-                W = params[2 * i + 2]
-                b = params[2 * i + 3]
-                y_next = activation(y_next @ W.T + b, f_args['activation'])
-            W = params[2 * f_args['hidden_layers']]
-            b = params[2 * f_args['hidden_layers'] + 1]
-            W_res = params[2 * f_args['hidden_layers'] + 2]
-            # output with linear activation and residual component
-            y_out = y_next @ W.T + b + jnp.hstack((x, u)) @ W_res.T
-            return y_out
-
-    h_idx0 = 2 * f_args['hidden_layers'] + 3
+            net_in = jnp.hstack((x, u))
+            return f_ann(net_in, params)
 
     @jax.jit
     def h_net(x, u, params):
         # f : (nx, nu) --> ny OR nx --> ny
         if h_args['feedthrough']:
-            input_val = jnp.hstack((x, u))
+            net_in = jnp.hstack((x, u))
         else:
-            input_val = x
-        W = params[h_idx0]
-        b = params[h_idx0 + 1]
-        y_next = activation(input_val @ W.T + b, h_args['activation'])
-        for i in range(h_args['hidden_layers'] - 1):
-            W = params[h_idx0 + 2 * i + 2]
-            b = params[h_idx0 + 2 * i + 3]
-            y_next = activation(y_next @ W.T + b, h_args['activation'])
-        W = params[h_idx0 + 2 * h_args['hidden_layers']]
-        b = params[h_idx0 + 2 * h_args['hidden_layers'] + 1]
-        W_res = params[h_idx0 + 2 * h_args['hidden_layers'] + 2]
-        # output with linear activation and residual component
-        y_out = y_next @ W.T + b + input_val @ W_res.T
-        return y_out
+            net_in = x
+        return h_ann(net_in, params)
 
     key = jax.random.key(seed)
     key_f, key_h = jax.random.split(key, 2)
@@ -387,103 +331,51 @@ def gen_fx_hx_fz_hz_encoder_networks(nx: int, nz: int, nu: int, ny: int, encoder
         encoder_net (function) : Encoder ANN function.
         params (list of ndararys) : List containing the combined initial values for all ANNs in the model.
     """
+
+    fx_ann = generate_simple_res_net(0, fx_args['hidden_layers'], fx_args['activation'])
+    hx_idx0 = 2 * fx_args['hidden_layers'] + 3
+    hx_ann = generate_simple_res_net(hx_idx0, hx_args['hidden_layers'], hx_args['activation'])
+    fz_idx0 = hx_idx0 + 2 * hx_args['hidden_layers'] + 3
+    fz_ann = generate_simple_res_net(fz_idx0, fz_args['hidden_layers'], fz_args['activation'])
+    hz_idx0 = fz_idx0 + 2 * fz_args['hidden_layers'] + 3
+    hz_ann = generate_simple_res_net(hz_idx0, hz_args['hidden_layers'], hz_args['activation'])
+    encoder_idx0 = hz_idx0 + 2 * hz_args['hidden_layers'] + 3
+    encoder_ann = generate_simple_res_net(encoder_idx0, encoder_args['hidden_layers'], encoder_args['activation'])
+
     @jax.jit
     def fx_net(x, u, params):
         # fx : (nx, nu) --> nx
-        W = params[0]
-        b = params[1]
-        y_next = activation(jnp.hstack((x, u)) @ W.T + b, fx_args['activation'])
-        for i in range(fx_args['hidden_layers'] - 1):
-            W = params[2 * i + 2]
-            b = params[2 * i + 3]
-            y_next = activation(y_next @ W.T + b, fx_args['activation'])
-        W = params[2 * fx_args['hidden_layers']]
-        b = params[2 * fx_args['hidden_layers'] + 1]
-        W_res = params[2 * fx_args['hidden_layers'] + 2]
-        # output with linear activation and residual component
-        y_out = y_next @ W.T + b + jnp.hstack((x, u)) @ W_res.T
-        return y_out
+        net_in = jnp.hstack((x, u))
+        return fx_ann(net_in, params)
 
-    hx_idx0 = 2 * fx_args['hidden_layers'] + 3
     @jax.jit
     def hx_net(x, u, params):
         # hx : (nx, nu) --> ny OR nx --> ny
         if hx_args['feedthrough']:
-            input_val = jnp.hstack((x, u))
+            net_in = jnp.hstack((x, u))
         else:
-            input_val = x
-        W = params[hx_idx0]
-        b = params[hx_idx0 + 1]
-        y_next = activation(input_val @ W.T + b, hx_args['activation'])
-        for i in range(hx_args['hidden_layers'] - 1):
-            W = params[hx_idx0 + 2 * i + 2]
-            b = params[hx_idx0 + 2 * i + 3]
-            y_next = activation(y_next @ W.T + b, hx_args['activation'])
-        W = params[hx_idx0 + 2 * hx_args['hidden_layers']]
-        b = params[hx_idx0 + 2 * hx_args['hidden_layers'] + 1]
-        W_res = params[hx_idx0 + 2 * hx_args['hidden_layers'] + 2]
-        # output with linear activation and residual component
-        y_out = y_next @ W.T + b + input_val @ W_res.T
-        return y_out
+            net_in = x
+        return hx_ann(net_in, params)
 
-    fz_idx0 = hx_idx0 + 2 * hx_args['hidden_layers'] + 3
     @jax.jit
     def fz_net(z, x, u, v, params):
         # fz : (nz, nx, nu, ny) --> nz
-        input_val = jnp.hstack((z, x, u, v))
-        W = params[fz_idx0]
-        b = params[fz_idx0 + 1]
-        y_next = activation(input_val @ W.T + b, fz_args['activation'])
-        for i in range(fz_args['hidden_layers'] - 1):
-            W = params[fz_idx0 + 2 * i + 2]
-            b = params[fz_idx0 + 2 * i + 3]
-            y_next = activation(y_next @ W.T + b, fz_args['activation'])
-        W = params[fz_idx0 + 2 * fz_args['hidden_layers']]
-        b = params[fz_idx0 + 2 * fz_args['hidden_layers'] + 1]
-        W_res = params[fz_idx0 + 2 * fz_args['hidden_layers'] + 2]
-        # output with linear activation and residual component
-        y_out = y_next @ W.T + b + input_val @ W_res.T
-        return y_out
+        net_in = jnp.hstack((z, x, u, v))
+        return fz_ann(net_in, params)
 
-    hz_idx0 = fz_idx0 + 2 * fz_args['hidden_layers'] + 3
     @jax.jit
     def hz_net(z, x, u, params):
         # hz : (nz, nx, nu) --> ny OR (nz, nx) --> nu
         if hz_args['feedthrough']:
-            input_val = jnp.hstack((z, x, u))
+            net_in = jnp.hstack((z, x, u))
         else:
-            input_val = jnp.hstack((z, x))
-        W = params[hz_idx0]
-        b = params[hz_idx0 + 1]
-        y_next = activation(input_val @ W.T + b, hz_args['activation'])
-        for i in range(hz_args['hidden_layers'] - 1):
-            W = params[hz_idx0 + 2 * i + 2]
-            b = params[hz_idx0 + 2 * i + 3]
-            y_next = activation(y_next @ W.T + b, hz_args['activation'])
-        W = params[hz_idx0 + 2 * hz_args['hidden_layers']]
-        b = params[hz_idx0 + 2 * hz_args['hidden_layers'] + 1]
-        W_res = params[hz_idx0 + 2 * hz_args['hidden_layers'] + 2]
-        # output with linear activation and residual component
-        y_out = y_next @ W.T + b + input_val @ W_res.T
-        return y_out
+            net_in = jnp.hstack((z, x))
+        return hz_ann(net_in, params)
 
-    encoder_idx0 = hz_idx0 + 2 * hz_args['hidden_layers'] + 3
     @jax.jit
     def encoder_net(yu_hist, params):
         # encoder : (n*ny+n*nu) --> (x, nz)
-        W = params[encoder_idx0]
-        b = params[encoder_idx0 + 1]
-        y_next = activation(yu_hist @ W.T + b, encoder_args['activation'])
-        for i in range(encoder_args['hidden_layers'] - 1):
-            W = params[encoder_idx0 + 2 * i + 2]
-            b = params[encoder_idx0 + 2 * i + 3]
-            y_next = activation(y_next @ W.T + b, encoder_args['activation'])
-        W = params[encoder_idx0 + 2 * encoder_args['hidden_layers']]
-        b = params[encoder_idx0 + 2 * encoder_args['hidden_layers'] + 1]
-        W_res = params[encoder_idx0 + 2 * encoder_args['hidden_layers'] + 2]
-        # output with linear activation and residual component
-        y_out = y_next @ W.T + b + yu_hist @ W_res.T
-        return y_out
+        return encoder_ann(yu_hist, params)
 
     key = jax.random.key(seed)
     key_fx, key_hx, key_fz, key_hz, key_enc = jax.random.split(key, 5)
@@ -546,90 +438,48 @@ def gen_fx_hx_fz_hz_networks(nx: int, nz: int, nu: int, ny: int, fx_args: dict[s
         hz_net (function) : Output map ANN function of the noise model.
         params (list of ndararys) : List containing the combined initial values for all ANNs in the model.
     """
+
+    fx_ann = generate_simple_res_net(0, fx_args['hidden_layers'], fx_args['activation'])
+    hx_idx0 = 2 * fx_args['hidden_layers'] + 3
+    hx_ann = generate_simple_res_net(hx_idx0, hx_args['hidden_layers'], hx_args['activation'])
+    fz_idx0 = hx_idx0 + 2 * hx_args['hidden_layers'] + 3
+    fz_ann = generate_simple_res_net(fz_idx0, fz_args['hidden_layers'], fz_args['activation'])
+    hz_idx0 = fz_idx0 + 2 * fz_args['hidden_layers'] + 3
+    hz_ann = generate_simple_res_net(hz_idx0, hz_args['hidden_layers'], hz_args['activation'])
+
     @jax.jit
     def fx_net(x, u, params):
         # fx : (nx, nu) --> nx
-        W = params[0]
-        b = params[1]
-        y_next = activation(jnp.hstack((x, u)) @ W.T + b, fx_args['activation'])
-        for i in range(fx_args['hidden_layers'] - 1):
-            W = params[2 * i + 2]
-            b = params[2 * i + 3]
-            y_next = activation(y_next @ W.T + b, fx_args['activation'])
-        W = params[2 * fx_args['hidden_layers']]
-        b = params[2 * fx_args['hidden_layers'] + 1]
-        W_res = params[2 * fx_args['hidden_layers'] + 2]
-        # output with linear activation and residual component
-        y_out = y_next @ W.T + b + jnp.hstack((x, u)) @ W_res.T
-        return y_out
-
-    hx_idx0 = 2 * fx_args['hidden_layers'] + 3
+        net_in = jnp.hstack((x, u))
+        return fx_ann(net_in, params)
 
     @jax.jit
     def hx_net(x, u, params):
         # hx : (nx, nu) --> ny OR nx --> ny
         if hx_args['feedthrough']:
-            input_val = jnp.hstack((x, u))
+            net_in = jnp.hstack((x, u))
         else:
-            input_val = x
-        W = params[hx_idx0]
-        b = params[hx_idx0 + 1]
-        y_next = activation(input_val @ W.T + b, hx_args['activation'])
-        for i in range(hx_args['hidden_layers'] - 1):
-            W = params[hx_idx0 + 2 * i + 2]
-            b = params[hx_idx0 + 2 * i + 3]
-            y_next = activation(y_next @ W.T + b, hx_args['activation'])
-        W = params[hx_idx0 + 2 * hx_args['hidden_layers']]
-        b = params[hx_idx0 + 2 * hx_args['hidden_layers'] + 1]
-        W_res = params[hx_idx0 + 2 * hx_args['hidden_layers'] + 2]
-        # output with linear activation and residual component
-        y_out = y_next @ W.T + b + input_val @ W_res.T
-        return y_out
-
-    fz_idx0 = hx_idx0 + 2 * hx_args['hidden_layers'] + 3
+            net_in = x
+        return hx_ann(net_in, params)
 
     @jax.jit
     def fz_net(z, x, u, v, params):
         # fz : (nz, nx, nu, ny) --> nz
-        input_val = jnp.hstack((z, x, u, v))
-        W = params[fz_idx0]
-        b = params[fz_idx0 + 1]
-        y_next = activation(input_val @ W.T + b, fz_args['activation'])
-        for i in range(fz_args['hidden_layers'] - 1):
-            W = params[fz_idx0 + 2 * i + 2]
-            b = params[fz_idx0 + 2 * i + 3]
-            y_next = activation(y_next @ W.T + b, fz_args['activation'])
-        W = params[fz_idx0 + 2 * fz_args['hidden_layers']]
-        b = params[fz_idx0 + 2 * fz_args['hidden_layers'] + 1]
-        W_res = params[fz_idx0 + 2 * fz_args['hidden_layers'] + 2]
-        # output with linear activation and residual component
-        y_out = y_next @ W.T + b + input_val @ W_res.T
+        net_in = jnp.hstack((z, x, u, v))
+        y_out = fz_ann(net_in, params)
         # enforce fz=(0, ., ., 0) == 0
         # z_zero = relu(jnp.abs(z) - tol_z * jnp.ones_like(z)) / (jnp.abs(z) + epsilon_z * jnp.ones_like(z))
         # v_zero = relu(jnp.abs(v) - tol_z * jnp.ones_like(v)) / (jnp.abs(v) + epsilon_z * jnp.ones_like(v))
         return y_out #* jnp.minimum(jnp.min(z_zero), jnp.min(v_zero))
 
-    hz_idx0 = fz_idx0 + 2 * fz_args['hidden_layers'] + 3
-
     @jax.jit
     def hz_net(z, x, u, params):
         # hz : (nz, nx, nu) --> ny OR (nz, nx) --> nu
         if hz_args['feedthrough']:
-            input_val = jnp.hstack((z, x, u))
+            net_in = jnp.hstack((z, x, u))
         else:
-            input_val = jnp.hstack((z, x))
-        W = params[hz_idx0]
-        b = params[hz_idx0 + 1]
-        y_next = activation(input_val @ W.T + b, hz_args['activation'])
-        for i in range(hz_args['hidden_layers'] - 1):
-            W = params[hz_idx0 + 2 * i + 2]
-            b = params[hz_idx0 + 2 * i + 3]
-            y_next = activation(y_next @ W.T + b, hz_args['activation'])
-        W = params[hz_idx0 + 2 * hz_args['hidden_layers']]
-        b = params[hz_idx0 + 2 * hz_args['hidden_layers'] + 1]
-        W_res = params[hz_idx0 + 2 * hz_args['hidden_layers'] + 2]
-        # output with linear activation and residual component
-        y_out = y_next @ W.T + b + input_val @ W_res.T
+            net_in = jnp.hstack((z, x))
+        y_out = hz_ann(net_in, params)
         # enforce hz=(0, ., .) == 0
         # z_zero = relu(jnp.abs(z) - tol_z * jnp.ones_like(z)) / (jnp.abs(z) + epsilon_z * jnp.ones_like(z))
         return y_out #* jnp.min(z_zero)
@@ -691,86 +541,51 @@ def gen_separate_fx_hx_fz_hz_networks(nx: int, nz: int, nu: int, ny: int, fx_arg
         hz_net (function) : Output map ANN function of the noise model.
         noise_params (list of ndararys) : List containing the combined initial values for the ANNs in the noise model.
     """
+
+    fx_ann = generate_simple_res_net(0, fx_args['hidden_layers'], fx_args['activation'])
+    hx_idx0 = 2 * fx_args['hidden_layers'] + 3
+    hx_ann = generate_simple_res_net(hx_idx0, hx_args['hidden_layers'], hx_args['activation'])
+    fz_idx0 = hx_idx0 + 2 * hx_args['hidden_layers'] + 3
+    fz_ann = generate_simple_res_net(fz_idx0, fz_args['hidden_layers'], fz_args['activation'])
+    hz_idx0 = fz_idx0 + 2 * fz_args['hidden_layers'] + 3
+    hz_ann = generate_simple_res_net(hz_idx0, hz_args['hidden_layers'], hz_args['activation'])
+
     @jax.jit
     def fx_net(x, u, params):
         # fx : (nx, nu) --> nx
-        W = params[0]
-        b = params[1]
-        y_next = activation(jnp.hstack((x, u)) @ W.T + b, fx_args['activation'])
-        for i in range(fx_args['hidden_layers'] - 1):
-            W = params[2 * i + 2]
-            b = params[2 * i + 3]
-            y_next = activation(y_next @ W.T + b, fx_args['activation'])
-        W = params[2 * fx_args['hidden_layers']]
-        b = params[2 * fx_args['hidden_layers'] + 1]
-        W_res = params[2 * fx_args['hidden_layers'] + 2]
-        # output with linear activation and residual component
-        y_out = y_next @ W.T + b + jnp.hstack((x, u)) @ W_res.T
-        return y_out
-
-    hx_idx0 = 2 * fx_args['hidden_layers'] + 3
+        net_in = jnp.hstack((x, u))
+        return fx_ann(net_in, params)
 
     @jax.jit
     def hx_net(x, u, params):
         # hx : (nx, nu) --> ny OR nx --> ny
         if hx_args['feedthrough']:
-            input_val = jnp.hstack((x, u))
+            net_in = jnp.hstack((x, u))
         else:
-            input_val = x
-        W = params[hx_idx0]
-        b = params[hx_idx0 + 1]
-        y_next = activation(input_val @ W.T + b, hx_args['activation'])
-        for i in range(hx_args['hidden_layers'] - 1):
-            W = params[hx_idx0 + 2 * i + 2]
-            b = params[hx_idx0 + 2 * i + 3]
-            y_next = activation(y_next @ W.T + b, hx_args['activation'])
-        W = params[hx_idx0 + 2 * hx_args['hidden_layers']]
-        b = params[hx_idx0 + 2 * hx_args['hidden_layers'] + 1]
-        W_res = params[hx_idx0 + 2 * hx_args['hidden_layers'] + 2]
-        # output with linear activation and residual component
-        y_out = y_next @ W.T + b + input_val @ W_res.T
-        return y_out
+            net_in = x
+        return hx_ann(net_in, params)
 
     @jax.jit
     def fz_net(z, x, u, v, params):
         # fz : (nz, nx, nu, ny) --> nz
-        input_val = jnp.hstack((z, x, u, v))
-        W = params[0]
-        b = params[1]
-        y_next = activation(input_val @ W.T + b, fz_args['activation'])
-        for i in range(fz_args['hidden_layers'] - 1):
-            W = params[2 * i + 2]
-            b = params[2 * i + 3]
-            y_next = activation(y_next @ W.T + b, fz_args['activation'])
-        W = params[2 * fz_args['hidden_layers']]
-        b = params[2 * fz_args['hidden_layers'] + 1]
-        W_res = params[2 * fz_args['hidden_layers'] + 2]
-        # output with linear activation and residual component
-        y_out = y_next @ W.T + b + input_val @ W_res.T
-        return y_out
-
-    hz_idx0 = 2 * fz_args['hidden_layers'] + 3
+        net_in = jnp.hstack((z, x, u, v))
+        y_out = fz_ann(net_in, params)
+        # enforce fz=(0, ., ., 0) == 0
+        # z_zero = relu(jnp.abs(z) - tol_z * jnp.ones_like(z)) / (jnp.abs(z) + epsilon_z * jnp.ones_like(z))
+        # v_zero = relu(jnp.abs(v) - tol_z * jnp.ones_like(v)) / (jnp.abs(v) + epsilon_z * jnp.ones_like(v))
+        return y_out  # * jnp.minimum(jnp.min(z_zero), jnp.min(v_zero))
 
     @jax.jit
     def hz_net(z, x, u, params):
         # hz : (nz, nx, nu) --> ny OR (nz, nx) --> nu
         if hz_args['feedthrough']:
-            input_val = jnp.hstack((z, x, u))
+            net_in = jnp.hstack((z, x, u))
         else:
-            input_val = jnp.hstack((z, x))
-        W = params[hz_idx0]
-        b = params[hz_idx0 + 1]
-        y_next = activation(input_val @ W.T + b, hz_args['activation'])
-        for i in range(hz_args['hidden_layers'] - 1):
-            W = params[hz_idx0 + 2 * i + 2]
-            b = params[hz_idx0 + 2 * i + 3]
-            y_next = activation(y_next @ W.T + b, hz_args['activation'])
-        W = params[hz_idx0 + 2 * hz_args['hidden_layers']]
-        b = params[hz_idx0 + 2 * hz_args['hidden_layers'] + 1]
-        W_res = params[hz_idx0 + 2 * hz_args['hidden_layers'] + 2]
-        # output with linear activation and residual component
-        y_out = y_next @ W.T + b + input_val @ W_res.T
-        return y_out
+            net_in = jnp.hstack((z, x))
+        y_out = hz_ann(net_in, params)
+        # enforce hz=(0, ., .) == 0
+        # z_zero = relu(jnp.abs(z) - tol_z * jnp.ones_like(z)) / (jnp.abs(z) + epsilon_z * jnp.ones_like(z))
+        return y_out  # * jnp.min(z_zero)
 
     key = jax.random.key(seed)
     key_fz, key_hz = jax.random.split(key, 2)
@@ -826,103 +641,51 @@ def gen_separate_fx_hx_fz_hz_encoder_networks(nx: int, nz: int, nu: int, ny: int
         encoder_net (function) : Encoder ANN function for combined process+noise state estimation.
         params (list of ndararys) : List containing the combined initial values for the ANNs in the noise model and the encoder.
     """
+
+    fx_ann = generate_simple_res_net(0, fx_args['hidden_layers'], fx_args['activation'])
+    hx_idx0 = 2 * fx_args['hidden_layers'] + 3
+    hx_ann = generate_simple_res_net(hx_idx0, hx_args['hidden_layers'], hx_args['activation'])
+    fz_idx0 = hx_idx0 + 2 * hx_args['hidden_layers'] + 3
+    fz_ann = generate_simple_res_net(fz_idx0, fz_args['hidden_layers'], fz_args['activation'])
+    hz_idx0 = fz_idx0 + 2 * fz_args['hidden_layers'] + 3
+    hz_ann = generate_simple_res_net(hz_idx0, hz_args['hidden_layers'], hz_args['activation'])
+    encoder_idx0 = hz_idx0 + 2 * hz_args['hidden_layers'] + 3
+    encoder_ann = generate_simple_res_net(encoder_idx0, encoder_args['hidden_layers'], encoder_args['activation'])
+
     @jax.jit
     def fx_net(x, u, params):
         # fx : (nx, nu) --> nx
-        W = params[0]
-        b = params[1]
-        y_next = activation(jnp.hstack((x, u)) @ W.T + b, fx_args['activation'])
-        for i in range(fx_args['hidden_layers'] - 1):
-            W = params[2 * i + 2]
-            b = params[2 * i + 3]
-            y_next = activation(y_next @ W.T + b, fx_args['activation'])
-        W = params[2 * fx_args['hidden_layers']]
-        b = params[2 * fx_args['hidden_layers'] + 1]
-        W_res = params[2 * fx_args['hidden_layers'] + 2]
-        # output with linear activation and residual component
-        y_out = y_next @ W.T + b + jnp.hstack((x, u)) @ W_res.T
-        return y_out
+        net_in = jnp.hstack((x, u))
+        return fx_ann(net_in, params)
 
-    hx_idx0 = 2 * fx_args['hidden_layers'] + 3
     @jax.jit
     def hx_net(x, u, params):
         # hx : (nx, nu) --> ny OR nx --> ny
         if hx_args['feedthrough']:
-            input_val = jnp.hstack((x, u))
+            net_in = jnp.hstack((x, u))
         else:
-            input_val = x
-        W = params[hx_idx0]
-        b = params[hx_idx0 + 1]
-        y_next = activation(input_val @ W.T + b, hx_args['activation'])
-        for i in range(hx_args['hidden_layers'] - 1):
-            W = params[hx_idx0 + 2 * i + 2]
-            b = params[hx_idx0 + 2 * i + 3]
-            y_next = activation(y_next @ W.T + b, hx_args['activation'])
-        W = params[hx_idx0 + 2 * hx_args['hidden_layers']]
-        b = params[hx_idx0 + 2 * hx_args['hidden_layers'] + 1]
-        W_res = params[hx_idx0 + 2 * hx_args['hidden_layers'] + 2]
-        # output with linear activation and residual component
-        y_out = y_next @ W.T + b + input_val @ W_res.T
-        return y_out
-
+            net_in = x
+        return hx_ann(net_in, params)
 
     @jax.jit
     def fz_net(z, x, u, v, params):
         # fz : (nz, nx, nu, ny) --> nz
-        input_val = jnp.hstack((z, x, u, v))
-        W = params[0]
-        b = params[1]
-        y_next = activation(input_val @ W.T + b, fz_args['activation'])
-        for i in range(fz_args['hidden_layers'] - 1):
-            W = params[2 * i + 2]
-            b = params[2 * i + 3]
-            y_next = activation(y_next @ W.T + b, fz_args['activation'])
-        W = params[2 * fz_args['hidden_layers']]
-        b = params[2 * fz_args['hidden_layers'] + 1]
-        W_res = params[2 * fz_args['hidden_layers'] + 2]
-        # output with linear activation and residual component
-        y_out = y_next @ W.T + b + input_val @ W_res.T
-        return y_out
+        net_in = jnp.hstack((z, x, u, v))
+        return fz_ann(net_in, params)
 
-    hz_idx0 = 2 * fz_args['hidden_layers'] + 3
     @jax.jit
     def hz_net(z, x, u, params):
         # hz : (nz, nx, nu) --> ny OR (nz, nx) --> nu
         if hz_args['feedthrough']:
-            input_val = jnp.hstack((z, x, u))
+            net_in = jnp.hstack((z, x, u))
         else:
-            input_val = jnp.hstack((z, x))
-        W = params[hz_idx0]
-        b = params[hz_idx0 + 1]
-        y_next = activation(input_val @ W.T + b, hz_args['activation'])
-        for i in range(hz_args['hidden_layers'] - 1):
-            W = params[hz_idx0 + 2 * i + 2]
-            b = params[hz_idx0 + 2 * i + 3]
-            y_next = activation(y_next @ W.T + b, hz_args['activation'])
-        W = params[hz_idx0 + 2 * hz_args['hidden_layers']]
-        b = params[hz_idx0 + 2 * hz_args['hidden_layers'] + 1]
-        W_res = params[hz_idx0 + 2 * hz_args['hidden_layers'] + 2]
-        # output with linear activation and residual component
-        y_out = y_next @ W.T + b + input_val @ W_res.T
-        return y_out
+            net_in = jnp.hstack((z, x))
+        return hz_ann(net_in, params)
 
-    encoder_idx0 = hz_idx0 + 2 * hz_args['hidden_layers'] + 3
     @jax.jit
     def encoder_net(yu_hist, params):
         # encoder : (n*ny+n*nu) --> (x, nz)
-        W = params[encoder_idx0]
-        b = params[encoder_idx0 + 1]
-        y_next = activation(yu_hist @ W.T + b, encoder_args['activation'])
-        for i in range(encoder_args['hidden_layers'] - 1):
-            W = params[encoder_idx0 + 2 * i + 2]
-            b = params[encoder_idx0 + 2 * i + 3]
-            y_next = activation(y_next @ W.T + b, encoder_args['activation'])
-        W = params[encoder_idx0 + 2 * encoder_args['hidden_layers']]
-        b = params[encoder_idx0 + 2 * encoder_args['hidden_layers'] + 1]
-        W_res = params[encoder_idx0 + 2 * encoder_args['hidden_layers'] + 2]
-        # output with linear activation and residual component
-        y_out = y_next @ W.T + b + yu_hist @ W_res.T
-        return y_out
+        return encoder_ann(yu_hist, params)
 
     key = jax.random.key(seed)
     key_fz, key_hz, key_enc = jax.random.split(key, 3)
