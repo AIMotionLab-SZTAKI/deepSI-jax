@@ -1,8 +1,8 @@
 # deepSI-jax
-JAX implementation of the deepSI toolbox for deep-learning-based identification of dynamical systems.
+JAX implementation of the [deepSI](https://github.com/MaartenSchoukens/deepSI) toolbox for deep-learning-based identification of dynamical systems. For an efficient identification pipeline, the [jax-sysid](https://github.com/bemporad/jax-sysid) toolbox was adapted to incorporate the SUBNET-based elements.
 
 # Installation
-For day-to-day usage, the most convenient way for installation is:
+For standalone installation, recommended for day-to-day usage, the most convenient way to install the toolbox is:
 ```bash
 pip install git+https://github.com/AIMotionLab-SZTAKI/deepSI-jax@main
 ```
@@ -10,11 +10,11 @@ pip install git+https://github.com/AIMotionLab-SZTAKI/deepSI-jax@main
 
 <br>
 
-To be able to run the example scripts and/or modify the codebase, clone the repository:
+Alternatively, to be able to run the example scripts and/or modify the codebase, clone the repository:
 ```bash
 git clone https://github.com/AIMotionLab-SZTAKI/deepSI-jax
 ```
-To install the package and its dependencies (it is advised to use a virtual environment):
+Then, install the package and its dependencies (it is advised to use a virtual environment), as
 ```bash
 cd deepSI-jax
 pip install -e .
@@ -75,3 +75,32 @@ plt.legend(); plt.xlabel('Time Index'); plt.ylabel('y'); plt.grid(); plt.tight_l
 plt.show()
 ```
 <img width="698" height="295" alt="example_usage_figure_for_github" src="https://github.com/user-attachments/assets/736ae06b-a5b8-4303-bcd6-57a76b2a0794" />
+
+# Citing
+The `deepSI_jax` toolbox offers an efficient, JAX-based implementation of the subspace encoder method. When using the SUBNET structure, please cite:
+```
+@article{beintema_deep_2023,
+	title = {Deep subspace encoders for nonlinear system identification},
+	volume = {156},
+	journal = {Automatica},
+	author = {Beintema, Gerben I. and Schoukens, Maarten and Tóth, Roland},
+	year = {2023},
+	pages = {111210}
+}
+```
+
+The toolbox is built by using the highly efficient `jax-sysid` toolbox, so please also cite:
+```
+@article{bemporad_l-bfgs-b_2025,
+	title = {An {L}-{BFGS}-{B} {Approach} for {Linear} and {Nonlinear} {System} {Identification} {Under} {$\ell_1$} and {Group}-{Lasso} {Regularization}},
+	journal = {IEEE Transactions on Automatic Control},
+	author = {Bemporad, Alberto},
+	year = {2025},
+	pages = {4857--4864},
+    volume={70},
+    number={7}
+}
+```
+
+# License
+See the [LICENSE](/LICENSE) file for license rights and limitations (MIT).
